@@ -35,6 +35,10 @@ class LaneFollower:
         self.min_servo = rospy.get_param("~min_servo", 0.1)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
+        self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
+        self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
+        self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
+        self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
@@ -59,6 +63,7 @@ class LaneFollower:
 
         self.prev_servo = self.steering_offset
         self.current_center = self.desired_center
+        self.prev_center = self.desired_center
         self.initialized = False
 
         rospy.on_shutdown(self._cleanup)
@@ -79,10 +84,22 @@ class LaneFollower:
         slide_img, center_x = self._run_slidewindow(lane_mask)
 
         if center_x is not None:
-            self.current_center = center_x
+            filtered_center = (
+                self.center_smoothing * self.prev_center
+                + (1.0 - self.center_smoothing) * center_x
+            )
+        else:
+            filtered_center = self.prev_center
+        self.prev_center = filtered_center
+        self.current_center = filtered_center
 
         self.center_pub.publish(Float64(self.current_center))
-        error = self.current_center - self.desired_center
+        raw_error = self.current_center - self.desired_center
+        self.error_bias += self.bias_correction_gain * raw_error
+        self.error_bias = self._clamp(
+            self.error_bias, -self.max_error_bias, self.max_error_bias
+        )
+        error = raw_error - self.error_bias
         self.error_pub.publish(Float64(error))
 
         target_servo = self.steering_offset + self.steering_gain * error
