@@ -36,6 +36,7 @@ class LaneFollower:
         self.min_servo = rospy.get_param("~min_servo", 0.05)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
+        self.low_speed_factor = rospy.get_param("~low_speed_factor", 0.1)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
         self.max_center_step = rospy.get_param("~max_center_step", 25.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
@@ -84,7 +85,7 @@ class LaneFollower:
             self.initialized = True
 
         lane_mask = self._create_lane_mask(frame)
-        slide_img, center_x = self._run_slidewindow(lane_mask)
+        slide_img, center_x, has_lane = self._run_slidewindow(lane_mask)
 
         if center_x is not None:
             blended = (
@@ -119,7 +120,8 @@ class LaneFollower:
         )
         self.prev_servo = smoothed_servo
 
-        self.speed_pub.publish(Float64(self.speed_value))
+        speed_cmd = self.speed_value if has_lane else self.speed_value * self.low_speed_factor
+        self.speed_pub.publish(Float64(speed_cmd))
         self.steering_pub.publish(Float64(smoothed_servo))
 
         if self.enable_viz:
@@ -197,11 +199,13 @@ class LaneFollower:
             blur_img = cv2.GaussianBlur(lane_mask, (5, 5), 0)
             warped = self.warper.warp(blur_img)
             slide_img, center_x, _ = self.slidewindow.slidewindow(warped)
-            return slide_img, center_x
+            if center_x is None or (isinstance(center_x, float) and math.isnan(center_x)):
+                raise ValueError("Invalid center from slidewindow")
+            return slide_img, center_x, True
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
             fallback_center = self._center_from_mask(lane_mask, self.prev_center)
-            return None, fallback_center
+            return None, fallback_center, False
 
     @staticmethod
     def _center_from_mask(mask, default_value):
