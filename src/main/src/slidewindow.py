@@ -8,6 +8,8 @@ class SlideWindow:
         self.lane_width_ratio = 0.27
         self.min_lane_pixels = 150
         self.current_line = "MID"
+        self.last_lane_width = None
+        self.lane_width_smoothing = 0.4
 
     def slidewindow(self, img):
         out_img = np.dstack((img, img, img)) * 255
@@ -60,29 +62,34 @@ class SlideWindow:
 
         left_exists = len(left_lane_inds) > self.min_lane_pixels
         right_exists = len(right_lane_inds) > self.min_lane_pixels
-        lane_width_px = int(width * self.lane_width_ratio)
 
-        if left_exists:
-            left_x = int(np.mean(nonzerox[left_lane_inds]))
-        else:
-            left_x = None
+        lane_width_default = width * self.lane_width_ratio
+        lane_width_px = self.last_lane_width if self.last_lane_width is not None else lane_width_default
 
-        if right_exists:
-            right_x = int(np.mean(nonzerox[right_lane_inds]))
-        else:
-            right_x = None
+        left_x = int(np.mean(nonzerox[left_lane_inds])) if left_exists else None
+        right_x = int(np.mean(nonzerox[right_lane_inds])) if right_exists else None
 
         if left_exists and right_exists:
+            measured_width = max(1, right_x - left_x)
+            if 0.5 * lane_width_default < measured_width < 1.5 * lane_width_default:
+                if self.last_lane_width is None:
+                    lane_width_px = measured_width
+                else:
+                    lane_width_px = (
+                        self.lane_width_smoothing * self.last_lane_width +
+                        (1 - self.lane_width_smoothing) * measured_width
+                    )
+                self.last_lane_width = lane_width_px
             center_x = (left_x + right_x) // 2
-            self.current_line = "MID"
+            self.current_line = "BOTH"
         elif left_exists:
-            center_x = left_x + lane_width_px
-            self.current_line = "LEFT"
+            center_x = int(left_x + lane_width_px / 2.0)
+            self.current_line = "LEFT_ONLY"
         elif right_exists:
-            center_x = right_x - lane_width_px
-            self.current_line = "RIGHT"
+            center_x = int(right_x - lane_width_px / 2.0)
+            self.current_line = "RIGHT_ONLY"
         else:
             center_x = width // 2
-            self.current_line = "MID"
+            self.current_line = "NONE"
 
         return out_img, center_x, self.current_line
