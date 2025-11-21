@@ -102,19 +102,31 @@ class LaneFollower:
         self.current_center = filtered_center
 
         self.center_pub.publish(Float64(self.current_center))
-        raw_error = self.desired_center - self.current_center
-        self.error_bias += self.bias_correction_gain * raw_error
-        self.error_bias = self._clamp(
-            self.error_bias, -self.max_error_bias, self.max_error_bias
-        )
-        error = raw_error - self.error_bias
-        self.error_pub.publish(Float64(error))
+        if has_lane:
+            raw_error = self.desired_center - self.current_center
+            self.error_bias += self.bias_correction_gain * raw_error
+            self.error_bias = self._clamp(
+                self.error_bias, -self.max_error_bias, self.max_error_bias
+            )
+            error = raw_error - self.error_bias
+        else:
+            raw_error = 0.0
+            error = 0.0
+        self.error_pub.publish(Float64(raw_error))
 
-        target_servo = self.steering_offset + self.steering_gain * error
-        target_servo = self._clamp(target_servo, self.min_servo, self.max_servo)
-        delta_servo = target_servo - self.prev_servo
-        delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
-        limited_target = self.prev_servo + delta_servo
+        if has_lane:
+            desired_servo = self.steering_offset + self.steering_gain * error
+        else:
+            desired_servo = self.steering_offset
+        desired_servo = self._clamp(desired_servo, self.min_servo, self.max_servo)
+
+        if has_lane:
+            delta_servo = desired_servo - self.prev_servo
+            delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
+            limited_target = self.prev_servo + delta_servo
+        else:
+            limited_target = self.prev_servo + 0.5 * (self.steering_offset - self.prev_servo)
+
         smoothed_servo = (
             self.steering_smoothing * self.prev_servo
             + (1.0 - self.steering_smoothing) * limited_target
