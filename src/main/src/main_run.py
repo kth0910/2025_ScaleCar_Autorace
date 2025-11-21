@@ -2,6 +2,7 @@
 #-*- coding: utf-8 -*-
 
 import os
+import math
 
 import rospy
 import cv2
@@ -36,9 +37,11 @@ class LaneFollower:
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
+        self.max_center_step = rospy.get_param("~max_center_step", 25.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
         self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
+        self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.03)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
@@ -84,10 +87,13 @@ class LaneFollower:
         slide_img, center_x = self._run_slidewindow(lane_mask)
 
         if center_x is not None:
-            filtered_center = (
+            blended = (
                 self.center_smoothing * self.prev_center
                 + (1.0 - self.center_smoothing) * center_x
             )
+            delta = blended - self.prev_center
+            delta = self._clamp(delta, -self.max_center_step, self.max_center_step)
+            filtered_center = self.prev_center + delta
         else:
             filtered_center = self.prev_center
         self.prev_center = filtered_center
@@ -104,9 +110,12 @@ class LaneFollower:
 
         target_servo = self.steering_offset + self.steering_gain * error
         target_servo = self._clamp(target_servo, self.min_servo, self.max_servo)
+        delta_servo = target_servo - self.prev_servo
+        delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
+        limited_target = self.prev_servo + delta_servo
         smoothed_servo = (
             self.steering_smoothing * self.prev_servo
-            + (1.0 - self.steering_smoothing) * target_servo
+            + (1.0 - self.steering_smoothing) * limited_target
         )
         self.prev_servo = smoothed_servo
 
