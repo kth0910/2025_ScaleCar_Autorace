@@ -245,8 +245,8 @@ class LaneFollower:
         kernel = np.ones((5, 5), np.uint8)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        lane_mask = cv2.erode(lane_mask, kernel, iterations=2)
-        glare = cv2.inRange(L_channel, 230, 255)
+        lane_mask = cv2.erode(lane_mask, kernel, iterations=1)
+        glare = cv2.inRange(L_channel, 240, 255)
         lane_mask = cv2.bitwise_and(lane_mask, cv2.bitwise_not(glare))
         return self._apply_roi(lane_mask)
 
