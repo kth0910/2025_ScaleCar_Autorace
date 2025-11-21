@@ -31,19 +31,19 @@ class LaneFollower:
 
         # 파라미터
         self.desired_center = rospy.get_param("~desired_center", 280.0)
-        self.steering_gain = rospy.get_param("~steering_gain", -0.004)
+        self.steering_gain = rospy.get_param("~steering_gain", -0.002)
         self.steering_offset = rospy.get_param("~steering_offset", 0.60)
-        self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.4)
+        self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.6)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
-        self.max_center_step = rospy.get_param("~max_center_step", 25.0)
+        self.max_center_step = rospy.get_param("~max_center_step", 15.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
         self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
-        self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.06)
-        self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 400)
+        self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.03)
+        self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.left_balance_ratio = rospy.get_param("~left_balance_ratio", 0.35)
 
         # 퍼블리셔
@@ -176,10 +176,10 @@ class LaneFollower:
         blur = cv2.GaussianBlur(frame, (5, 5), 0)
         hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
-        lower_yellow = np.array([15, 50, 70])
-        upper_yellow = np.array([45, 255, 255])
-        lower_white_hls = np.array([0, 180, 0])
-        upper_white_hls = np.array([255, 255, 130])
+        lower_yellow = np.array([18, 70, 90])
+        upper_yellow = np.array([36, 255, 255])
+        lower_white_hls = np.array([0, 190, 0])
+        upper_white_hls = np.array([255, 255, 120])
         mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
         mask_white_hls = cv2.inRange(hls, lower_white_hls, upper_white_hls)
         L_channel = lab[:, :, 0]
@@ -195,9 +195,9 @@ class LaneFollower:
         if np.max(grad_mag) > 0:
             grad_mag = grad_mag / np.max(grad_mag)
         sobel_mask = np.uint8(grad_mag * 255)
-        _, sobel_mask = cv2.threshold(sobel_mask, 60, 255, cv2.THRESH_BINARY)
+        _, sobel_mask = cv2.threshold(sobel_mask, 80, 255, cv2.THRESH_BINARY)
 
-        canny_mask = cv2.Canny(clahe_img, 60, 160)
+        canny_mask = cv2.Canny(clahe_img, 70, 180)
 
         lane_mask = cv2.bitwise_or(color_mask, sobel_mask)
         lane_mask = cv2.bitwise_or(lane_mask, canny_mask)
@@ -205,6 +205,7 @@ class LaneFollower:
         kernel = np.ones((5, 5), np.uint8)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        lane_mask = cv2.erode(lane_mask, kernel, iterations=1)
         lane_mask = self._apply_roi(lane_mask)
         return self._balance_lanes(lane_mask, hls, lab)
 
