@@ -199,14 +199,14 @@ class LaneFollower:
         blur = cv2.GaussianBlur(frame, (5, 5), 0)
         hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
-        lower_yellow = np.array([18, 70, 90])
-        upper_yellow = np.array([36, 255, 255])
-        lower_white_hls = np.array([0, 190, 0])
-        upper_white_hls = np.array([255, 255, 120])
+        lower_yellow = np.array([15, 60, 80])
+        upper_yellow = np.array([40, 255, 255])
+        lower_white_hls = np.array([0, 200, 0])
+        upper_white_hls = np.array([255, 255, 110])
         mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
         mask_white_hls = cv2.inRange(hls, lower_white_hls, upper_white_hls)
         L_channel = lab[:, :, 0]
-        _, mask_white_lab = cv2.threshold(L_channel, 200, 255, cv2.THRESH_BINARY)
+        _, mask_white_lab = cv2.threshold(L_channel, 210, 255, cv2.THRESH_BINARY)
         color_mask = cv2.bitwise_or(mask_yellow, mask_white_hls)
         color_mask = cv2.bitwise_or(color_mask, mask_white_lab)
 
@@ -218,9 +218,9 @@ class LaneFollower:
         if np.max(grad_mag) > 0:
             grad_mag = grad_mag / np.max(grad_mag)
         sobel_mask = np.uint8(grad_mag * 255)
-        _, sobel_mask = cv2.threshold(sobel_mask, 80, 255, cv2.THRESH_BINARY)
+        _, sobel_mask = cv2.threshold(sobel_mask, 90, 255, cv2.THRESH_BINARY)
 
-        canny_mask = cv2.Canny(clahe_img, 70, 180)
+        canny_mask = cv2.Canny(clahe_img, 80, 190)
 
         lane_mask = cv2.bitwise_or(color_mask, sobel_mask)
         lane_mask = cv2.bitwise_or(lane_mask, canny_mask)
@@ -228,7 +228,7 @@ class LaneFollower:
         kernel = np.ones((5, 5), np.uint8)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        lane_mask = cv2.erode(lane_mask, kernel, iterations=1)
+        lane_mask = cv2.erode(lane_mask, kernel, iterations=2)
         lane_mask = self._apply_roi(lane_mask)
         return self._balance_lanes(lane_mask, hls, lab)
 

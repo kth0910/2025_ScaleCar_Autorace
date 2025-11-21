@@ -16,8 +16,10 @@ class SlideWindow:
 
         histogram = np.sum(img[height // 2:, :], axis=0)
         midpoint = width // 2
-        leftx_base = np.argmax(histogram[:midpoint]) if np.any(histogram[:midpoint]) else int(width * 0.25)
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint if np.any(histogram[midpoint:]) else int(width * 0.75)
+        left_hist = histogram[:midpoint]
+        right_hist = histogram[midpoint:]
+        leftx_base = np.argmax(left_hist) if np.any(left_hist) else int(width * 0.25)
+        rightx_base = np.argmax(right_hist) + midpoint if np.any(right_hist) else int(width * 0.75)
 
         nwindows = 12
         window_height = height // nwindows
