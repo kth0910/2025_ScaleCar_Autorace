@@ -8,7 +8,6 @@ class SlideWindow:
         self.lane_width_ratio = 0.27
         self.min_lane_pixels = 150
         self.current_line = "MID"
-        self.left_bias_ratio = 0.2
 
     def slidewindow(self, img):
         out_img = np.dstack((img, img, img)) * 255
@@ -75,16 +74,13 @@ class SlideWindow:
             right_x = None
 
         if left_exists and right_exists:
-            center_x = (left_x + right_x) // 2 - bias_pixels
-            center_x = max(0, min(width - 1, center_x))
+            center_x = (left_x + right_x) // 2
             self.current_line = "MID"
         elif left_exists:
-            center_x = left_x + lane_width_px - bias_pixels
-            center_x = max(0, min(width - 1, center_x))
+            center_x = left_x + lane_width_px
             self.current_line = "LEFT"
         elif right_exists:
-            center_x = right_x - lane_width_px - bias_pixels
-            center_x = max(0, min(width - 1, center_x))
+            center_x = right_x - lane_width_px
             self.current_line = "RIGHT"
         else:
             center_x = width // 2
