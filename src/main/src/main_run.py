@@ -130,7 +130,7 @@ class LaneFollower:
             cv2.waitKey(1)
 
     def _create_lane_mask(self, frame):
-        if self.auto_threshold:
+        if self.auto_threshold and not self.enable_viz:
             return self._auto_lane_mask(frame)
         return self._manual_lane_mask(frame)
 
@@ -144,30 +144,53 @@ class LaneFollower:
             high_L = cv2.getTrackbarPos("high_L", self.TRACKBAR_WINDOW)
             high_S = cv2.getTrackbarPos("high_S", self.TRACKBAR_WINDOW)
         else:
-            low_H = rospy.get_param("~low_H", 128)
-            low_L = rospy.get_param("~low_L", 134)
-            low_S = rospy.get_param("~low_S", 87)
-            high_H = rospy.get_param("~high_H", 334)
+            low_H = rospy.get_param("~low_H", 120)
+            low_L = rospy.get_param("~low_L", 90)
+            low_S = rospy.get_param("~low_S", 80)
+            high_H = rospy.get_param("~high_H", 360)
             high_L = rospy.get_param("~high_L", 255)
-            high_S = rospy.get_param("~high_S", 251)
+            high_S = rospy.get_param("~high_S", 255)
 
-        lower_lane = np.array([low_H, low_L, low_S], dtype=np.uint8)
-        upper_lane = np.array([high_H, high_L, high_S], dtype=np.uint8)
-        lane_mask = cv2.inRange(hls, lower_lane, upper_lane)
-        return lane_mask
+        lower_lane = np.array([low_H, low_L, low_S], dtype=np.uint16)
+        upper_lane = np.array([high_H, high_L, high_S], dtype=np.uint16)
+        color_mask = cv2.inRange(hls, lower_lane, upper_lane)
+        return self._apply_roi(color_mask)
 
     def _auto_lane_mask(self, frame):
         hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
-        lower_yellow = np.array([15, 60, 60])
+        lower_yellow = np.array([15, 40, 60])
         upper_yellow = np.array([40, 255, 255])
-        lower_white = np.array([0, 200, 0])
-        upper_white = np.array([255, 255, 90])
+        lower_white = np.array([0, 160, 0])
+        upper_white = np.array([255, 255, 120])
         mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
         mask_white = cv2.inRange(hls, lower_white, upper_white)
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        abs_sobel = np.absolute(sobelx)
+        scaled_sobel = np.uint8(255 * abs_sobel / np.max(abs_sobel) + 1e-6)
+        _, grad_mask = cv2.threshold(scaled_sobel, 30, 255, cv2.THRESH_BINARY)
+
         lane_mask = cv2.bitwise_or(mask_yellow, mask_white)
+        lane_mask = cv2.bitwise_or(lane_mask, grad_mask)
+
         kernel = np.ones((5, 5), np.uint8)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-        return lane_mask
+        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        return self._apply_roi(lane_mask)
+
+    @staticmethod
+    def _apply_roi(mask):
+        h, w = mask.shape[:2]
+        polygon = np.array([[
+            (int(0.05 * w), h),
+            (int(0.05 * w), int(0.6 * h)),
+            (int(0.95 * w), int(0.6 * h)),
+            (int(0.95 * w), h),
+        ]], dtype=np.int32)
+        roi_mask = np.zeros_like(mask)
+        cv2.fillPoly(roi_mask, polygon, 255)
+        return cv2.bitwise_and(mask, roi_mask)
 
     def _run_slidewindow(self, lane_mask):
         try:
@@ -177,15 +200,17 @@ class LaneFollower:
             return slide_img, center_x
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
-            fallback_center = self._center_from_mask(lane_mask)
+            fallback_center = self._center_from_mask(lane_mask, self.prev_center)
             return None, fallback_center
 
     @staticmethod
-    def _center_from_mask(mask):
+    def _center_from_mask(mask, default_value):
+        if mask is None:
+            return default_value
         moments = cv2.moments(mask, binaryImage=True)
         if moments["m00"] > 0:
             return moments["m10"] / moments["m00"]
-        return None
+        return default_value
 
     def _setup_trackbars(self):
         cv2.namedWindow(self.TRACKBAR_WINDOW, cv2.WINDOW_NORMAL)
