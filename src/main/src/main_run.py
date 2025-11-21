@@ -211,17 +211,19 @@ class LaneFollower:
         return self._apply_roi(color_mask)
 
     def _auto_lane_mask(self, frame):
-        blur = cv2.GaussianBlur(frame, (5, 5), 0)
+        blur = cv2.bilateralFilter(frame, d=7, sigmaColor=70, sigmaSpace=70)
+        blur = cv2.medianBlur(blur, 3)
+        blur = cv2.GaussianBlur(blur, (5, 5), 0)
         hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
-        lower_yellow = np.array([15, 60, 80])
-        upper_yellow = np.array([40, 255, 255])
-        lower_white_hls = np.array([0, 200, 0])
-        upper_white_hls = np.array([255, 255, 110])
+        lower_yellow = np.array([10, 50, 70])
+        upper_yellow = np.array([50, 255, 255])
+        lower_white_hls = np.array([0, 190, 0])
+        upper_white_hls = np.array([255, 255, 120])
         mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
         mask_white_hls = cv2.inRange(hls, lower_white_hls, upper_white_hls)
         L_channel = lab[:, :, 0]
-        _, mask_white_lab = cv2.threshold(L_channel, 210, 255, cv2.THRESH_BINARY)
+        _, mask_white_lab = cv2.threshold(L_channel, 205, 255, cv2.THRESH_BINARY)
         color_mask = cv2.bitwise_or(mask_yellow, mask_white_hls)
         color_mask = cv2.bitwise_or(color_mask, mask_white_lab)
 
@@ -233,9 +235,9 @@ class LaneFollower:
         if np.max(grad_mag) > 0:
             grad_mag = grad_mag / np.max(grad_mag)
         sobel_mask = np.uint8(grad_mag * 255)
-        _, sobel_mask = cv2.threshold(sobel_mask, 90, 255, cv2.THRESH_BINARY)
+        _, sobel_mask = cv2.threshold(sobel_mask, 85, 255, cv2.THRESH_BINARY)
 
-        canny_mask = cv2.Canny(clahe_img, 80, 190)
+        canny_mask = cv2.Canny(clahe_img, 75, 180)
 
         lane_mask = cv2.bitwise_or(color_mask, sobel_mask)
         lane_mask = cv2.bitwise_or(lane_mask, canny_mask)
@@ -244,6 +246,8 @@ class LaneFollower:
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         lane_mask = cv2.erode(lane_mask, kernel, iterations=2)
+        glare = cv2.inRange(L_channel, 230, 255)
+        lane_mask = cv2.bitwise_and(lane_mask, cv2.bitwise_not(glare))
         return self._apply_roi(lane_mask)
 
     @staticmethod
