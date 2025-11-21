@@ -79,7 +79,6 @@ class SlideWindow:
         left_exists = len(left_lane_inds) > self.min_lane_pixels
         right_exists = len(right_lane_inds) > self.min_lane_pixels
         lane_width_px = int(width * self.lane_width_ratio)
-        bias_pixels = int(self.left_bias_ratio * lane_width_px)
 
         if left_exists:
             left_x = int(np.mean(nonzerox[left_lane_inds]))

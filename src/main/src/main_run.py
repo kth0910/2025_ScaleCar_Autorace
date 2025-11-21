@@ -47,7 +47,6 @@ class LaneFollower:
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
         self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.035)
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
-        self.left_balance_ratio = rospy.get_param("~left_balance_ratio", 0.35)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
         self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.35)
         self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
@@ -209,8 +208,7 @@ class LaneFollower:
         lower_lane = np.array([low_H, low_L, low_S], dtype=np.uint16)
         upper_lane = np.array([high_H, high_L, high_S], dtype=np.uint16)
         color_mask = cv2.inRange(hls, lower_lane, upper_lane)
-        color_mask = self._apply_roi(color_mask)
-        return self._balance_lanes(color_mask, hls, None)
+        return self._apply_roi(color_mask)
 
     def _auto_lane_mask(self, frame):
         blur = cv2.GaussianBlur(frame, (5, 5), 0)
@@ -246,8 +244,7 @@ class LaneFollower:
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
         lane_mask = cv2.erode(lane_mask, kernel, iterations=2)
-        lane_mask = self._apply_roi(lane_mask)
-        return self._balance_lanes(lane_mask, hls, lab)
+        return self._apply_roi(lane_mask)
 
     @staticmethod
     def _apply_roi(mask):
@@ -261,36 +258,6 @@ class LaneFollower:
         roi_mask = np.zeros_like(mask)
         cv2.fillPoly(roi_mask, polygon, 255)
         return cv2.bitwise_and(mask, roi_mask)
-
-    def _balance_lanes(self, mask, hls, lab):
-        h, w = mask.shape[:2]
-        left_pixels = cv2.countNonZero(mask[:, :w//2])
-        right_pixels = cv2.countNonZero(mask[:, w//2:])
-        if right_pixels == 0 or left_pixels >= self.left_balance_ratio * right_pixels:
-            return mask
-
-        if hls is None:
-            return mask
-        extra_masks = []
-        yellow_hls = cv2.inRange(
-            hls,
-            np.array([5, 30, 50]),
-            np.array([80, 255, 255])
-        )
-        extra_masks.append(yellow_hls)
-        if lab is not None:
-            yellow_lab = cv2.inRange(lab[:, :, 2], 140, 255)
-            extra_masks.append(yellow_lab)
-
-        bias_mask = extra_masks[0]
-        for extra in extra_masks[1:]:
-            bias_mask = cv2.bitwise_or(bias_mask, extra)
-
-        left_roi = np.zeros_like(mask)
-        cv2.rectangle(left_roi, (0, int(0.5 * h)), (w // 2, h), 255, -1)
-        bias_mask = cv2.bitwise_and(bias_mask, left_roi)
-        combined = cv2.bitwise_or(mask, bias_mask)
-        return combined
 
     def _run_slidewindow(self, lane_mask):
         mask_pixels = int(cv2.countNonZero(lane_mask))
