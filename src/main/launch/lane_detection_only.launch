@@ -1,0 +1,14 @@
+<launch>
+    <!-- 차선 감지 전용 런치 파일 -->
+    
+    <!-- 카메라 노드 -->
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch"/>
+    
+    <!-- 이미지 보정 노드 (보정된 이미지 생성) -->
+    <node pkg="image_proc" type="image_proc" name="image_proc" ns="usb_cam" output="screen"/>
+    
+    <!-- 차선 감지 노드 -->
+    <node name="lane_detection_only" type="lane_detection_only.py" pkg="main" output="screen"/>
+    
+</launch>
+
