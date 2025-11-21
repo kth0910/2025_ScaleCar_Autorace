@@ -100,7 +100,7 @@ class LaneFollower:
         self.current_center = filtered_center
 
         self.center_pub.publish(Float64(self.current_center))
-        raw_error = self.current_center - self.desired_center
+        raw_error = self.desired_center - self.current_center
         self.error_bias += self.bias_correction_gain * raw_error
         self.error_bias = self._clamp(
             self.error_bias, -self.max_error_bias, self.max_error_bias
