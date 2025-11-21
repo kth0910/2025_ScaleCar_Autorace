@@ -8,11 +8,17 @@ class SlideWindow:
         self.lane_width_ratio = 0.27
         self.min_lane_pixels = 150
         self.current_line = "MID"
-        self.left_bias_ratio = 0.0  # legacy compatibility
+        self.left_exists = False
+        self.right_exists = False
+        self.left_x = None
+        self.right_x = None
+        self.lane_width_px = None
+        self.frame_width = None
 
     def slidewindow(self, img):
         out_img = np.dstack((img, img, img)) * 255
         height, width = img.shape[:2]
+        self.frame_width = width
 
         histogram = np.sum(img[height // 2:, :], axis=0)
         midpoint = width // 2
@@ -34,6 +40,15 @@ class SlideWindow:
         rightx_current = rightx_base
         left_lane_inds = []
         right_lane_inds = []
+
+        if nonzerox.size == 0:
+            self.left_exists = False
+            self.right_exists = False
+            self.left_x = None
+            self.right_x = None
+            self.lane_width_px = int(width * self.lane_width_ratio)
+            self.current_line = "MID"
+            return out_img, width // 2, self.current_line
 
         for window in range(nwindows):
             win_y_low = height - (window + 1) * window_height
@@ -75,6 +90,12 @@ class SlideWindow:
             right_x = int(np.mean(nonzerox[right_lane_inds]))
         else:
             right_x = None
+
+        self.left_exists = left_exists
+        self.right_exists = right_exists
+        self.left_x = left_x
+        self.right_x = right_x
+        self.lane_width_px = lane_width_px
 
         if left_exists and right_exists:
             center_x = (left_x + right_x) // 2

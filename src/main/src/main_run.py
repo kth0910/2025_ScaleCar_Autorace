@@ -49,6 +49,8 @@ class LaneFollower:
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.left_balance_ratio = rospy.get_param("~left_balance_ratio", 0.35)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
+        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.35)
+        self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
@@ -109,14 +111,29 @@ class LaneFollower:
         self.prev_center = filtered_center
         self.current_center = filtered_center
 
+        left_exists = getattr(self.slidewindow, "left_exists", False)
+        right_exists = getattr(self.slidewindow, "right_exists", False)
+        left_x = getattr(self.slidewindow, "left_x", None)
+        right_x = getattr(self.slidewindow, "right_x", None)
+        frame_width = getattr(self.slidewindow, "frame_width", self.desired_center * 2)
+        lane_detected = left_exists or right_exists
+
         self.center_pub.publish(Float64(self.current_center))
-        if has_lane:
+        if left_exists and right_exists:
             raw_error = self.desired_center - self.current_center
             self.error_bias += self.bias_correction_gain * raw_error
             self.error_bias = self._clamp(
                 self.error_bias, -self.max_error_bias, self.max_error_bias
             )
             error = raw_error - self.error_bias
+        elif left_exists:
+            target = self.single_left_ratio * frame_width
+            raw_error = target - left_x if left_x is not None else 0.0
+            error = raw_error
+        elif right_exists:
+            target = self.single_right_ratio * frame_width
+            raw_error = target - right_x if right_x is not None else 0.0
+            error = raw_error
         else:
             raw_error = 0.0
             error = 0.0
@@ -126,7 +143,7 @@ class LaneFollower:
         dt = max(1e-3, current_time - self.prev_time)
         self.prev_time = current_time
 
-        if has_lane:
+        if lane_detected:
             self.integral_error += error * dt
             self.integral_error = self._clamp(self.integral_error, -self.integral_limit, self.integral_limit)
             derivative = (error - self.prev_error) / dt
@@ -144,7 +161,7 @@ class LaneFollower:
         self.prev_error = error
         desired_servo = self._clamp(desired_servo, self.min_servo, self.max_servo)
 
-        if has_lane:
+        if lane_detected:
             delta_servo = desired_servo - self.prev_servo
             delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
             limited_target = self.prev_servo + delta_servo
@@ -278,6 +295,7 @@ class LaneFollower:
     def _run_slidewindow(self, lane_mask):
         mask_pixels = int(cv2.countNonZero(lane_mask))
         if mask_pixels < self.min_mask_pixels:
+            self._reset_line_state()
             return None, self.prev_center, False
         try:
             blur_img = cv2.GaussianBlur(lane_mask, (5, 5), 0)
@@ -288,6 +306,7 @@ class LaneFollower:
             return slide_img, center_x, True
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
+            self._reset_line_state()
             fallback_center = self._center_from_mask(lane_mask, self.prev_center)
             return None, fallback_center, mask_pixels >= self.min_mask_pixels
 
@@ -325,6 +344,13 @@ class LaneFollower:
             cv2.destroyAllWindows()
         except Exception:
             pass
+
+    def _reset_line_state(self):
+        self.slidewindow.left_exists = False
+        self.slidewindow.right_exists = False
+        self.slidewindow.left_x = None
+        self.slidewindow.right_x = None
+        self.slidewindow.lane_width_px = None
 
 
 def run():
