@@ -27,6 +27,7 @@ class LaneFollower:
         self.bridge = CvBridge()
         self.warper = Warper()
         self.slidewindow = SlideWindow()
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         # 파라미터
         self.desired_center = rospy.get_param("~desired_center", 280.0)
@@ -42,6 +43,7 @@ class LaneFollower:
         self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
         self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.06)
+        self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 800)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
@@ -169,22 +171,34 @@ class LaneFollower:
         return self._apply_roi(color_mask)
 
     def _auto_lane_mask(self, frame):
-        hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
-        lower_yellow = np.array([15, 40, 60])
-        upper_yellow = np.array([40, 255, 255])
-        lower_white = np.array([0, 160, 0])
-        upper_white = np.array([255, 255, 120])
+        blur = cv2.GaussianBlur(frame, (5, 5), 0)
+        hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
+        lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
+        lower_yellow = np.array([15, 50, 70])
+        upper_yellow = np.array([45, 255, 255])
+        lower_white_hls = np.array([0, 180, 0])
+        upper_white_hls = np.array([255, 255, 130])
         mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
-        mask_white = cv2.inRange(hls, lower_white, upper_white)
+        mask_white_hls = cv2.inRange(hls, lower_white_hls, upper_white_hls)
+        L_channel = lab[:, :, 0]
+        _, mask_white_lab = cv2.threshold(L_channel, 200, 255, cv2.THRESH_BINARY)
+        color_mask = cv2.bitwise_or(mask_yellow, mask_white_hls)
+        color_mask = cv2.bitwise_or(color_mask, mask_white_lab)
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        abs_sobel = np.absolute(sobelx)
-        scaled_sobel = np.uint8(255 * abs_sobel / np.max(abs_sobel) + 1e-6)
-        _, grad_mask = cv2.threshold(scaled_sobel, 30, 255, cv2.THRESH_BINARY)
+        gray = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+        clahe_img = self.clahe.apply(gray)
+        sobelx = cv2.Sobel(clahe_img, cv2.CV_32F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(clahe_img, cv2.CV_32F, 0, 1, ksize=3)
+        grad_mag = cv2.magnitude(sobelx, sobely)
+        if np.max(grad_mag) > 0:
+            grad_mag = grad_mag / np.max(grad_mag)
+        sobel_mask = np.uint8(grad_mag * 255)
+        _, sobel_mask = cv2.threshold(sobel_mask, 60, 255, cv2.THRESH_BINARY)
 
-        lane_mask = cv2.bitwise_or(mask_yellow, mask_white)
-        lane_mask = cv2.bitwise_or(lane_mask, grad_mask)
+        canny_mask = cv2.Canny(clahe_img, 60, 160)
+
+        lane_mask = cv2.bitwise_or(color_mask, sobel_mask)
+        lane_mask = cv2.bitwise_or(lane_mask, canny_mask)
 
         kernel = np.ones((5, 5), np.uint8)
         lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -205,6 +219,9 @@ class LaneFollower:
         return cv2.bitwise_and(mask, roi_mask)
 
     def _run_slidewindow(self, lane_mask):
+        mask_pixels = int(cv2.countNonZero(lane_mask))
+        if mask_pixels < self.min_mask_pixels:
+            return None, self.prev_center, False
         try:
             blur_img = cv2.GaussianBlur(lane_mask, (5, 5), 0)
             warped = self.warper.warp(blur_img)
@@ -215,7 +232,7 @@ class LaneFollower:
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
             fallback_center = self._center_from_mask(lane_mask, self.prev_center)
-            return None, fallback_center, False
+            return None, fallback_center, mask_pixels >= self.min_mask_pixels
 
     @staticmethod
     def _center_from_mask(mask, default_value):
