@@ -258,16 +258,14 @@ class LaneFollower:
         try:
             blur_img = cv2.GaussianBlur(lane_mask, (5, 5), 0)
             warped = self.warper.warp(blur_img)
-            slide_img, center_x, line_status = self.slidewindow.slidewindow(warped)
+            slide_img, center_x, _ = self.slidewindow.slidewindow(warped)
             if center_x is None or (isinstance(center_x, float) and math.isnan(center_x)):
                 raise ValueError("Invalid center from slidewindow")
-            has_lane = line_status not in ("NONE",)
-            return slide_img, center_x, has_lane
+            return slide_img, center_x, True
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
             fallback_center = self._center_from_mask(lane_mask, self.prev_center)
-            has_lane = mask_pixels >= self.min_mask_pixels
-            return None, fallback_center, has_lane
+            return None, fallback_center, mask_pixels >= self.min_mask_pixels
 
     @staticmethod
     def _center_from_mask(mask, default_value):
