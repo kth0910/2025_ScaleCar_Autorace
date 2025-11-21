@@ -211,8 +211,7 @@ class LaneFollower:
         return self._apply_roi(color_mask)
 
     def _auto_lane_mask(self, frame):
-        blur = cv2.bilateralFilter(frame, d=7, sigmaColor=70, sigmaSpace=70)
-        blur = cv2.medianBlur(blur, 3)
+        blur = cv2.medianBlur(frame, 3)
         blur = cv2.GaussianBlur(blur, (5, 5), 0)
         hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
