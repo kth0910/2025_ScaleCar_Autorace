@@ -30,18 +30,18 @@ class LaneFollower:
 
         # 파라미터
         self.desired_center = rospy.get_param("~desired_center", 280.0)
-        self.steering_gain = rospy.get_param("~steering_gain", -0.003)
-        self.steering_offset = rospy.get_param("~steering_offset", 0.57)
-        self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.7)
-        self.min_servo = rospy.get_param("~min_servo", 0.1)
-        self.max_servo = rospy.get_param("~max_servo", 0.95)
+        self.steering_gain = rospy.get_param("~steering_gain", -0.004)
+        self.steering_offset = rospy.get_param("~steering_offset", 0.60)
+        self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.4)
+        self.min_servo = rospy.get_param("~min_servo", 0.05)
+        self.max_servo = rospy.get_param("~max_servo", 1.0)
         self.speed_value = rospy.get_param("~speed", 2000.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
         self.max_center_step = rospy.get_param("~max_center_step", 25.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
         self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
-        self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.03)
+        self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.06)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
