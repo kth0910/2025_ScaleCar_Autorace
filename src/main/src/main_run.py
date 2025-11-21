@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 #-*- coding: utf-8 -*-
 
+import os
+
 import rospy
 import cv2
 import numpy as np
@@ -42,6 +44,13 @@ class LaneFollower:
 
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
 
+        self.enable_viz = rospy.get_param(
+            "~enable_viz",
+            bool(os.environ.get("DISPLAY"))
+        )
+        if not self.enable_viz:
+            rospy.logwarn("DISPLAY not found. Visualization disabled.")
+
         self.prev_servo = self.steering_offset
         self.current_center = self.desired_center
         self.initialized = False
@@ -56,7 +65,7 @@ class LaneFollower:
             rospy.logwarn(f"Failed to convert image: {exc}")
             return
 
-        if not self.initialized:
+        if self.enable_viz and not self.initialized:
             self._setup_trackbars()
             self.initialized = True
 
@@ -81,20 +90,29 @@ class LaneFollower:
         self.speed_pub.publish(Float64(self.speed_value))
         self.steering_pub.publish(Float64(smoothed_servo))
 
-        cv2.imshow("Lane Frame", frame)
-        cv2.imshow("Lane Mask", lane_mask)
-        if slide_img is not None:
-            cv2.imshow("Sliding Window", slide_img)
-        cv2.waitKey(1)
+        if self.enable_viz:
+            cv2.imshow("Lane Frame", frame)
+            cv2.imshow("Lane Mask", lane_mask)
+            if slide_img is not None:
+                cv2.imshow("Sliding Window", slide_img)
+            cv2.waitKey(1)
 
     def _extract_lane_mask(self, frame):
         hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
-        low_H = cv2.getTrackbarPos("low_H", self.TRACKBAR_WINDOW)
-        low_L = cv2.getTrackbarPos("low_L", self.TRACKBAR_WINDOW)
-        low_S = cv2.getTrackbarPos("low_S", self.TRACKBAR_WINDOW)
-        high_H = cv2.getTrackbarPos("high_H", self.TRACKBAR_WINDOW)
-        high_L = cv2.getTrackbarPos("high_L", self.TRACKBAR_WINDOW)
-        high_S = cv2.getTrackbarPos("high_S", self.TRACKBAR_WINDOW)
+        if self.enable_viz:
+            low_H = cv2.getTrackbarPos("low_H", self.TRACKBAR_WINDOW)
+            low_L = cv2.getTrackbarPos("low_L", self.TRACKBAR_WINDOW)
+            low_S = cv2.getTrackbarPos("low_S", self.TRACKBAR_WINDOW)
+            high_H = cv2.getTrackbarPos("high_H", self.TRACKBAR_WINDOW)
+            high_L = cv2.getTrackbarPos("high_L", self.TRACKBAR_WINDOW)
+            high_S = cv2.getTrackbarPos("high_S", self.TRACKBAR_WINDOW)
+        else:
+            low_H = rospy.get_param("~low_H", 128)
+            low_L = rospy.get_param("~low_L", 134)
+            low_S = rospy.get_param("~low_S", 87)
+            high_H = rospy.get_param("~high_H", 334)
+            high_L = rospy.get_param("~high_L", 255)
+            high_S = rospy.get_param("~high_S", 251)
 
         lower_lane = np.array([low_H, low_L, low_S], dtype=np.uint8)
         upper_lane = np.array([high_H, high_L, high_S], dtype=np.uint8)
@@ -130,6 +148,8 @@ class LaneFollower:
 
     @staticmethod
     def _cleanup():
+        if cv2 is None:
+            return
         try:
             cv2.destroyAllWindows()
         except Exception:
