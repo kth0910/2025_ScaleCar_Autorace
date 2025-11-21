@@ -51,6 +51,12 @@ class LaneFollower:
         if not self.enable_viz:
             rospy.logwarn("DISPLAY not found. Visualization disabled.")
 
+        self.auto_threshold = rospy.get_param("~auto_threshold", not self.enable_viz)
+        if self.auto_threshold:
+            rospy.loginfo("LaneFollower using auto color thresholds.")
+        elif not self.enable_viz:
+            rospy.logwarn("Manual thresholds requested but visualization disabled; using ROS params.")
+
         self.prev_servo = self.steering_offset
         self.current_center = self.desired_center
         self.initialized = False
@@ -69,7 +75,7 @@ class LaneFollower:
             self._setup_trackbars()
             self.initialized = True
 
-        lane_mask = self._extract_lane_mask(frame)
+        lane_mask = self._create_lane_mask(frame)
         slide_img, center_x = self._run_slidewindow(lane_mask)
 
         if center_x is not None:
@@ -97,7 +103,12 @@ class LaneFollower:
                 cv2.imshow("Sliding Window", slide_img)
             cv2.waitKey(1)
 
-    def _extract_lane_mask(self, frame):
+    def _create_lane_mask(self, frame):
+        if self.auto_threshold:
+            return self._auto_lane_mask(frame)
+        return self._manual_lane_mask(frame)
+
+    def _manual_lane_mask(self, frame):
         hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
         if self.enable_viz:
             low_H = cv2.getTrackbarPos("low_H", self.TRACKBAR_WINDOW)
@@ -119,6 +130,19 @@ class LaneFollower:
         lane_mask = cv2.inRange(hls, lower_lane, upper_lane)
         return lane_mask
 
+    def _auto_lane_mask(self, frame):
+        hls = cv2.cvtColor(frame, cv2.COLOR_BGR2HLS)
+        lower_yellow = np.array([15, 60, 60])
+        upper_yellow = np.array([40, 255, 255])
+        lower_white = np.array([0, 200, 0])
+        upper_white = np.array([255, 255, 90])
+        mask_yellow = cv2.inRange(hls, lower_yellow, upper_yellow)
+        mask_white = cv2.inRange(hls, lower_white, upper_white)
+        lane_mask = cv2.bitwise_or(mask_yellow, mask_white)
+        kernel = np.ones((5, 5), np.uint8)
+        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        return lane_mask
+
     def _run_slidewindow(self, lane_mask):
         try:
             blur_img = cv2.GaussianBlur(lane_mask, (5, 5), 0)
@@ -127,7 +151,15 @@ class LaneFollower:
             return slide_img, center_x
         except Exception as exc:
             rospy.logwarn(f"Slide window failed: {exc}")
-            return None, None
+            fallback_center = self._center_from_mask(lane_mask)
+            return None, fallback_center
+
+    @staticmethod
+    def _center_from_mask(mask):
+        moments = cv2.moments(mask, binaryImage=True)
+        if moments["m00"] > 0:
+            return moments["m10"] / moments["m00"]
+        return None
 
     def _setup_trackbars(self):
         cv2.namedWindow(self.TRACKBAR_WINDOW, cv2.WINDOW_NORMAL)
