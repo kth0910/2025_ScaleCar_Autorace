@@ -8,6 +8,7 @@ class SlideWindow:
         self.lane_width_ratio = 0.27
         self.min_lane_pixels = 150
         self.current_line = "MID"
+        self.left_bias_ratio = 0.0  # legacy compatibility
 
     def slidewindow(self, img):
         out_img = np.dstack((img, img, img)) * 255
