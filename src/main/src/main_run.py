@@ -36,8 +36,6 @@ class LaneFollower:
         self.min_servo = rospy.get_param("~min_servo", 0.05)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
-        self.low_speed_factor = rospy.get_param("~low_speed_factor", 0.1)
-        self.low_speed_min = rospy.get_param("~low_speed_min", 600.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
         self.max_center_step = rospy.get_param("~max_center_step", 25.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
@@ -133,12 +131,7 @@ class LaneFollower:
         )
         self.prev_servo = smoothed_servo
 
-        if has_lane:
-            speed_cmd = self.speed_value
-        else:
-            reduced_speed = self.speed_value * self.low_speed_factor
-            speed_cmd = max(reduced_speed, self.low_speed_min)
-        self.speed_pub.publish(Float64(speed_cmd))
+        self.speed_pub.publish(Float64(self.speed_value))
         self.steering_pub.publish(Float64(smoothed_servo))
 
         if self.enable_viz:
