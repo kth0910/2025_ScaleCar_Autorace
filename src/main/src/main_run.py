@@ -31,7 +31,10 @@ class LaneFollower:
 
         # 파라미터
         self.desired_center = rospy.get_param("~desired_center", 280.0)
-        self.steering_gain = rospy.get_param("~steering_gain", -0.002)
+        self.pid_kp = rospy.get_param("~steering_kp", -0.0024)
+        self.pid_ki = rospy.get_param("~steering_ki", -0.00005)
+        self.pid_kd = rospy.get_param("~steering_kd", -0.0004)
+        self.steering_gain = self.pid_kp  # backward compatibility
         self.steering_offset = rospy.get_param("~steering_offset", 0.60)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.6)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
@@ -45,6 +48,7 @@ class LaneFollower:
         self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.03)
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.left_balance_ratio = rospy.get_param("~left_balance_ratio", 0.35)
+        self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
 
         # 퍼블리셔
         self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
@@ -70,6 +74,9 @@ class LaneFollower:
         self.prev_servo = self.steering_offset
         self.current_center = self.desired_center
         self.prev_center = self.desired_center
+        self.prev_error = 0.0
+        self.integral_error = 0.0
+        self.prev_time = rospy.get_time()
         self.initialized = False
 
         rospy.on_shutdown(self._cleanup)
@@ -115,10 +122,26 @@ class LaneFollower:
             error = 0.0
         self.error_pub.publish(Float64(raw_error))
 
+        current_time = rospy.get_time()
+        dt = max(1e-3, current_time - self.prev_time)
+        self.prev_time = current_time
+
         if has_lane:
-            desired_servo = self.steering_offset + self.steering_gain * error
+            self.integral_error += error * dt
+            self.integral_error = self._clamp(self.integral_error, -self.integral_limit, self.integral_limit)
+            derivative = (error - self.prev_error) / dt
+            control = (
+                self.pid_kp * error +
+                self.pid_ki * self.integral_error +
+                self.pid_kd * derivative
+            )
+            desired_servo = self.steering_offset + control
         else:
+            self.integral_error *= 0.9
+            derivative = 0.0
             desired_servo = self.steering_offset
+
+        self.prev_error = error
         desired_servo = self._clamp(desired_servo, self.min_servo, self.max_servo)
 
         if has_lane:
@@ -214,8 +237,8 @@ class LaneFollower:
         h, w = mask.shape[:2]
         polygon = np.array([[
             (int(0.05 * w), h),
-            (int(0.05 * w), int(0.7 * h)),
-            (int(0.95 * w), int(0.7 * h)),
+            (int(0.05 * w), int(0.65 * h)),
+            (int(0.95 * w), int(0.65 * h)),
             (int(0.95 * w), h),
         ]], dtype=np.int32)
         roi_mask = np.zeros_like(mask)
