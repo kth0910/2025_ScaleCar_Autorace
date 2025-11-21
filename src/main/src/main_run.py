@@ -34,7 +34,7 @@ class LaneFollower:
         self.steering_offset = rospy.get_param("~steering_offset", 0.60)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.4)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
-        self.max_servo = rospy.get_param("~max_servo", 1.0)
+        self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.speed_value = rospy.get_param("~speed", 2000.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.5)
         self.max_center_step = rospy.get_param("~max_center_step", 25.0)
