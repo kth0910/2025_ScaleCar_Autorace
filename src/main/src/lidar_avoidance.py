@@ -30,11 +30,14 @@ class LidarAvoidancePlanner:
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.forward_fov = math.radians(rospy.get_param("~forward_fov_deg", 210.0))
         self.max_range = rospy.get_param("~max_range", 8.0)
-        self.safe_distance = rospy.get_param("~safe_distance", 0.8)  # 감도 향상: 1.2 → 0.8 (더 가까이서도 회피)
-        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.35)
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.4)  # 장애물 크기 확대: 0.15 → 0.4 (작은 장애물도 크게 인식)
+        self.safe_distance = rospy.get_param("~safe_distance", 0.8)
+        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.30)  # 30cm에서 완전 정지
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.20)  # 차폭 반경 20cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 2.5)
-        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.2)  # 감도 향상: 1.8 → 1.2 (더 먼 거리에서도 장애물 인식)
+        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.60)  # 60cm부터 장애물 인식
+        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.60)  # 60cm부터 속도 감소 시작
+        self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
+        self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
         self.clearance_weight = rospy.get_param("~clearance_weight", 0.65)
         self.smoothing_window = max(1, int(rospy.get_param("~smoothing_window", 7)))
@@ -147,8 +150,9 @@ class LidarAvoidancePlanner:
             self._publish_stop(scan.header, reason="no_gap")
             return
 
+        # 거리 기반 속도 감소 적용 (60cm부터 점진적으로 감소, 30cm에서 정지)
         drive_speed, pwm = self._compute_speed_profile(
-            target_distance, selected_score, emergency_stop
+            target_distance, selected_score, emergency_stop, closest
         )
         steering_angle = clamp(target_angle, -self.max_steering_angle, self.max_steering_angle)
         servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
@@ -194,15 +198,54 @@ class LidarAvoidancePlanner:
     def _collect_obstacle_points(
         self, ranges: np.ndarray, angles: np.ndarray
     ) -> np.ndarray:
+        # 1단계: 거리 기준으로 장애물 후보 필터링
         mask = ranges < self.obstacle_threshold
         if not np.any(mask):
             return np.zeros((0, 2), dtype=np.float32)
+        
         selected = np.stack((ranges[mask], angles[mask]), axis=1)
         xy = np.zeros_like(selected)
         xy[:, 0] = selected[:, 0] * np.cos(selected[:, 1])
         xy[:, 1] = selected[:, 0] * np.sin(selected[:, 1])
+        
+        # 2단계: 전방 포인트만 선택
         in_front = xy[:, 0] > 0.0
-        return xy[in_front]
+        front_points = xy[in_front]
+        
+        if len(front_points) == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+        
+        # 3단계: 클러스터링으로 연속된 포인트만 장애물로 인식 (노이즈 제거)
+        clustered_points = self._cluster_obstacle_points(front_points)
+        
+        return clustered_points
+    
+    def _cluster_obstacle_points(self, points: np.ndarray) -> np.ndarray:
+        """
+        간단한 거리 기반 클러스터링으로 연속된 포인트만 장애물로 인식.
+        최소 포인트 수 조건을 만족하는 클러스터만 반환.
+        """
+        if len(points) < self.min_obstacle_points:
+            return np.zeros((0, 2), dtype=np.float32)
+        
+        # 각 포인트 간 거리 계산
+        # 간단한 방법: 각도 순으로 정렬 후 인접 포인트 거리 확인
+        # 또는 더 정교한 DBSCAN 스타일 클러스터링
+        
+        # 간단한 방법: 각 포인트에서 가까운 포인트가 있는지 확인
+        valid_points = []
+        for i, p1 in enumerate(points):
+            # 주변에 최소 포인트 수만큼 가까운 포인트가 있는지 확인
+            distances = np.sqrt(np.sum((points - p1) ** 2, axis=1))
+            nearby_count = np.sum(distances < self.obstacle_cluster_threshold)
+            
+            if nearby_count >= self.min_obstacle_points:
+                valid_points.append(p1)
+        
+        if len(valid_points) == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+        
+        return np.array(valid_points, dtype=np.float32)
 
     def _select_target(
         self, ranges: np.ndarray, angles: np.ndarray
@@ -283,19 +326,38 @@ class LidarAvoidancePlanner:
         return target_angle, target_distance, float(scores[idx])
 
     def _compute_speed_profile(
-        self, lookahead: float, score: float, emergency_stop: bool
+        self, lookahead: float, score: float, emergency_stop: bool, closest_distance: float
     ) -> Tuple[float, float]:
         if emergency_stop:
             return 0.0, 0.0
 
+        # 거리 기반 속도 감소: 60cm부터 점진적으로 감소, 30cm에서 완전 정지
+        # 60cm 이상: 정상 속도
+        # 60cm ~ 30cm: 선형 감소
+        # 30cm 이하: 정지 (emergency_stop으로 이미 처리됨)
+        speed_reduction_factor = 1.0
+        if closest_distance < self.speed_reduction_start:
+            # 60cm ~ 30cm 구간에서 선형 감소
+            reduction_range = self.speed_reduction_start - self.hard_stop_distance  # 0.6 - 0.3 = 0.3m
+            if reduction_range > 0:
+                distance_in_range = closest_distance - self.hard_stop_distance
+                speed_reduction_factor = clamp(distance_in_range / reduction_range, 0.0, 1.0)
+        
         score = clamp(score, 0.0, 1.0)
         distance_ratio = clamp(lookahead / self.lookahead_distance, 0.0, 1.0)
         blended = 0.5 * score + 0.5 * distance_ratio
-        drive_speed = (
+        
+        # 기본 속도 계산
+        base_drive_speed = (
             self.min_drive_speed
             + (self.max_drive_speed - self.min_drive_speed) * blended
         )
-        pwm = self.min_pwm + (self.max_pwm - self.min_pwm) * blended
+        base_pwm = self.min_pwm + (self.max_pwm - self.min_pwm) * blended
+        
+        # 거리 기반 속도 감소 적용
+        drive_speed = base_drive_speed * speed_reduction_factor
+        pwm = self.min_pwm + (base_pwm - self.min_pwm) * speed_reduction_factor
+        
         return drive_speed, pwm
 
     def _publish_motion_commands(
