@@ -294,19 +294,28 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 전방 60cm 이내 장애물만 인식 (회피 로직용)
+        # 3단계: 전방 20도, 1m 이내 장애물만 인식 (회피 로직용)
+        # 3-1. 전방 20도 필터링 (±10도)
+        front_angle_limit = math.radians(20.0) * 0.5  # ±10도
+        front_angle_mask = np.abs(angles) <= front_angle_limit
+        
+        # 3-2. 거리 필터링 (1m 이내)
+        obstacle_detection_range = 1.0  # 1m
         distances = np.linalg.norm(xy, axis=1)
-        close_mask = distances < self.obstacle_threshold  # 60cm 이내만 장애물로 인식
-        obstacle_points = xy[close_mask]
+        distance_mask = distances < obstacle_detection_range
+        
+        # 3-3. 두 조건 모두 만족하는 포인트만 장애물로 인식
+        obstacle_mask = front_angle_mask & distance_mask
+        obstacle_points = xy[obstacle_mask]
         front_count = len(obstacle_points)
         
         if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found within %.2fm", self.obstacle_threshold)
+            rospy.logdebug_throttle(2.0, "No obstacle points found (front 20deg, < %.2fm)", obstacle_detection_range)
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
-        min_dist = float(np.min(distances[close_mask]))
-        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points within %.2fm, min_dist=%.2fm, total_points=%d", 
-                               front_count, self.obstacle_threshold, min_dist, len(xy))
+        min_dist = float(np.min(distances[obstacle_mask]))
+        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points (front 20deg, < %.2fm), min_dist=%.2fm, total_points=%d", 
+                               front_count, obstacle_detection_range, min_dist, len(xy))
         
         # 4단계: 클러스터링으로 노이즈 제거 (선택적)
         # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
@@ -346,10 +355,11 @@ class LidarAvoidancePlanner:
         
         # 포인트가 적으면 클러스터링 없이 모두 반환 (가까운 장애물은 작은 포인트 수로도 인식)
         if len(points) < self.min_obstacle_points:
-            # 포인트가 적어도 60cm 이내 장애물이면 모두 인식 (벽 등 큰 장애물도 인식)
+            # 포인트가 적어도 1m 이내 장애물이면 모두 인식 (벽 등 큰 장애물도 인식)
             distances = np.linalg.norm(points, axis=1)
             min_dist = float(np.min(distances))
-            if min_dist < self.obstacle_threshold:  # 60cm 이내는 클러스터링 없이도 인식
+            obstacle_detection_range = 1.0  # 1m
+            if min_dist < obstacle_detection_range:  # 1m 이내는 클러스터링 없이도 인식
                 rospy.logdebug_throttle(2.0, "Keeping %d points without clustering (min_dist=%.2fm)", len(points), min_dist)
                 return points
             return np.zeros((0, 2), dtype=np.float32)
@@ -383,10 +393,11 @@ class LidarAvoidancePlanner:
             # 원본 포인트의 최소 거리를 확인
             distances = np.linalg.norm(points, axis=1)
             min_dist = float(np.min(distances))
-            if min_dist < self.obstacle_threshold:
-                # 60cm 이내 장애물이면 클러스터링 없이도 모두 반환
+            obstacle_detection_range = 1.0  # 1m
+            if min_dist < obstacle_detection_range:
+                # 1m 이내 장애물이면 클러스터링 없이도 모두 반환
                 rospy.logwarn_throttle(1.0, "Clustering filtered all points, but min_dist=%.2fm < %.2fm. Returning all points.", 
-                                      min_dist, self.obstacle_threshold)
+                                      min_dist, obstacle_detection_range)
                 return points
             return np.zeros((0, 2), dtype=np.float32)
         
@@ -762,11 +773,12 @@ class LidarAvoidancePlanner:
         """
         marker_array = MarkerArray()
         
-        # 60cm 이내 장애물만 빨간색으로 표시
+        # 전방 20도, 1m 이내 장애물만 빨간색으로 표시
         if len(obstacle_points) > 0 and len(all_points) > 0:
             # 모든 포인트의 거리 계산
             all_distances = np.linalg.norm(all_points, axis=1)
-            close_mask = all_distances < self.obstacle_threshold  # 60cm 이내
+            obstacle_detection_range = 1.0  # 1m
+            close_mask = all_distances < obstacle_detection_range  # 1m 이내
             
             # 60cm 이내인 포인트만 빨간색 마커로 표시
             red_marker = Marker()
