@@ -305,16 +305,23 @@ class LidarAvoidancePlanner:
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[close_mask]))
-        rospy.logdebug_throttle(2.0, "Found %d obstacles within %.2fm, min_dist=%.2fm", 
-                                front_count, self.obstacle_threshold, min_dist)
+        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points within %.2fm, min_dist=%.2fm, total_points=%d", 
+                               front_count, self.obstacle_threshold, min_dist, len(xy))
         
         # 4단계: 클러스터링으로 노이즈 제거 (선택적)
         # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
+        original_count = len(obstacle_points)
         if len(obstacle_points) > 10:  # 포인트가 많을 때만 클러스터링
             clustered_points = self._cluster_obstacle_points(obstacle_points)
             if len(clustered_points) > 0:
                 obstacle_points = clustered_points
-                rospy.logdebug_throttle(2.0, "Clustered to %d points", len(clustered_points))
+                rospy.logdebug_throttle(2.0, "Clustered: %d -> %d points", original_count, len(clustered_points))
+            else:
+                # 클러스터링 실패 시 원본 포인트 유지 (벽 등 큰 장애물은 클러스터링 없이도 인식)
+                rospy.logwarn_throttle(1.0, "Clustering failed (0 points), keeping original %d points", original_count)
+        else:
+            # 포인트가 적으면 클러스터링 없이 모두 사용
+            rospy.logdebug_throttle(2.0, "Skipping clustering for %d points (< 10)", original_count)
         
         # 라이다 신뢰도 계산 (거리 기반: 가까울수록 높은 신뢰도)
         if len(obstacle_points) > 0:
@@ -339,10 +346,11 @@ class LidarAvoidancePlanner:
         
         # 포인트가 적으면 클러스터링 없이 모두 반환 (가까운 장애물은 작은 포인트 수로도 인식)
         if len(points) < self.min_obstacle_points:
-            # 포인트가 적어도 매우 가까운 장애물이면 인식
+            # 포인트가 적어도 60cm 이내 장애물이면 모두 인식 (벽 등 큰 장애물도 인식)
             distances = np.linalg.norm(points, axis=1)
             min_dist = float(np.min(distances))
-            if min_dist < 0.5:  # 50cm 이내는 클러스터링 없이도 인식
+            if min_dist < self.obstacle_threshold:  # 60cm 이내는 클러스터링 없이도 인식
+                rospy.logdebug_throttle(2.0, "Keeping %d points without clustering (min_dist=%.2fm)", len(points), min_dist)
                 return points
             return np.zeros((0, 2), dtype=np.float32)
         
@@ -364,11 +372,22 @@ class LidarAvoidancePlanner:
                 required_points = 1
             elif dist_to_origin < 0.5:  # 50cm 이내는 최소 포인트 수를 2로 완화
                 required_points = max(1, self.min_obstacle_points - 1)
+            elif dist_to_origin < 0.6:  # 60cm 이내는 최소 포인트 수를 2로 완화
+                required_points = max(1, self.min_obstacle_points - 1)
             
             if nearby_count >= required_points:
                 valid_points.append(p1)
         
         if len(valid_points) == 0:
+            # 클러스터링 결과가 없어도 벽 등 큰 장애물은 인식해야 함
+            # 원본 포인트의 최소 거리를 확인
+            distances = np.linalg.norm(points, axis=1)
+            min_dist = float(np.min(distances))
+            if min_dist < self.obstacle_threshold:
+                # 60cm 이내 장애물이면 클러스터링 없이도 모두 반환
+                rospy.logwarn_throttle(1.0, "Clustering filtered all points, but min_dist=%.2fm < %.2fm. Returning all points.", 
+                                      min_dist, self.obstacle_threshold)
+                return points
             return np.zeros((0, 2), dtype=np.float32)
         
         return np.array(valid_points, dtype=np.float32)
