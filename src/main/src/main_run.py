@@ -52,9 +52,30 @@ class LaneFollower:
         self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.35)
         self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
 
+        # 출력 토픽 (기본: 보간기 입력 토픽으로 발행해 단일 퍼블리셔로 정리)
+        self.use_unsmoothed_topics = rospy.get_param("~use_unsmoothed_topics", True)
+        default_speed_topic = (
+            "/commands/motor/unsmoothed_speed"
+            if self.use_unsmoothed_topics
+            else "/commands/motor/speed"
+        )
+        default_servo_topic = (
+            "/commands/servo/unsmoothed_position"
+            if self.use_unsmoothed_topics
+            else "/commands/servo/position"
+        )
+        self.speed_topic = rospy.get_param("~motor_topic", default_speed_topic)
+        self.servo_topic = rospy.get_param("~servo_topic", default_servo_topic)
+        if self.use_unsmoothed_topics:
+            rospy.loginfo(
+                "LaneFollower using unsmoothed outputs (%s, %s) to avoid conflicting motor publishers.",
+                self.speed_topic,
+                self.servo_topic,
+            )
+
         # 퍼블리셔
-        self.speed_pub = rospy.Publisher("/commands/motor/speed", Float64, queue_size=1)
-        self.steering_pub = rospy.Publisher("/commands/servo/position", Float64, queue_size=1)
+        self.speed_pub = rospy.Publisher(self.speed_topic, Float64, queue_size=1)
+        self.steering_pub = rospy.Publisher(self.servo_topic, Float64, queue_size=1)
         self.center_pub = rospy.Publisher("/lane_center_x", Float64, queue_size=1)
         self.error_pub = rospy.Publisher("/lane_error", Float64, queue_size=1)
 
