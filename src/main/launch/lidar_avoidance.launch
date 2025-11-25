@@ -5,9 +5,10 @@
   <arg name="use_ackermann_to_vesc" default="true"/>
   <arg name="use_rviz" default="true"/>
 
-  <!-- RPLIDAR configuration -->
+  <!-- RPLIDAR Hardware configuration (REQUIRED - no simulation) -->
+  <!-- RPLIDAR S1: baudrate 256000 권장 -->
   <arg name="serial_port" default="/dev/ttyUSB0"/>
-  <arg name="serial_baudrate" default="115200"/>
+  <arg name="serial_baudrate" default="256000"/>  <!-- S1/A3: 256000, A1/A2: 115200, S2: 1000000 -->
   <arg name="frame_id" default="laser"/>
   <arg name="angle_compensate" default="true"/>
   <arg name="scan_topic" default="/scan"/>
@@ -25,13 +26,17 @@
     </include>
   </group>
 
-  <!-- RPLIDAR -->
-  <include file="$(find rplidar_ros)/launch/rplidar.launch">
-    <arg name="serial_port" value="$(arg serial_port)"/>
-    <arg name="serial_baudrate" value="$(arg serial_baudrate)"/>
-    <arg name="frame_id" value="$(arg frame_id)"/>
-    <arg name="angle_compensate" value="$(arg angle_compensate)"/>
-  </include>
+  <!-- RPLIDAR S1 Hardware (required - no simulation) -->
+  <node name="rplidarNode" pkg="rplidar_ros" type="rplidarNode" output="screen" respawn="true" respawn_delay="2">
+    <param name="channel_type" type="string" value="serial"/>
+    <param name="serial_port" type="string" value="$(arg serial_port)"/>
+    <param name="serial_baudrate" type="int" value="$(arg serial_baudrate)"/>
+    <param name="frame_id" type="string" value="$(arg frame_id)"/>
+    <param name="inverted" type="bool" value="false"/>
+    <param name="angle_compensate" type="bool" value="$(arg angle_compensate)"/>
+    <param name="scan_mode" type="string" value=""/>
+    <param name="scan_frequency" type="double" value="10.0"/>
+  </node>
 
   <!-- Ackermann -> VESC converter -->
   <group if="$(arg use_ackermann_to_vesc)">

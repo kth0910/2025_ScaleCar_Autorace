@@ -83,11 +83,16 @@ class LidarAvoidancePlanner:
             "lidar_avoidance/closest_obstacle", Float64, queue_size=1
         )
 
+        self.last_scan_time = rospy.get_time()
+        self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
+        
         rospy.loginfo(
-            "LidarAvoidancePlanner ready. Subscribing to %s", self.scan_topic
+            "LidarAvoidancePlanner ready. Subscribing to %s (hardware only, no simulation)", 
+            self.scan_topic
         )
 
     def scan_callback(self, scan: LaserScan) -> None:
+        self.last_scan_time = rospy.get_time()
         prepared = self._prepare_scan(scan)
         if prepared is None:
             self._publish_stop(scan.header, reason="invalid_scan")

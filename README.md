@@ -39,12 +39,33 @@ roslaunch main main.launch
 - 실행 예시
 
 ```bash
+# 기본 실행 (RPLIDAR S1, 하드웨어만 사용, 시뮬레이션 없음)
 roslaunch main lidar_avoidance.launch \
   use_vesc_driver:=true \
   use_ackermann_to_vesc:=true \
   serial_port:=/dev/ttyUSB0 \
+  serial_baudrate:=256000 \
   vesc_port:=/dev/ttyVesc
+
+# 다른 RPLIDAR 모델 사용 시 baudrate 변경
+# A1/A2: serial_baudrate:=115200
+# A3: serial_baudrate:=256000 (S1과 동일)
+# S2: serial_baudrate:=1000000
 ```
+
+- **하드웨어 연결 문제 해결**:
+  - `RESULT_OPERATION_TIMEOUT` 오류 발생 시:
+    1. 시리얼 포트 확인: `ls -l /dev/ttyUSB*` 또는 `ls -l /dev/ttyACM*`
+    2. 권한 확인: `sudo chmod 666 /dev/ttyUSB0` (포트에 맞게 변경)
+    3. 올바른 포트 지정: `serial_port:=/dev/ttyUSB0` (실제 포트에 맞게)
+    4. **RPLIDAR 모델별 baudrate**:
+       - **S1 (기본값)**: 256000
+       - A3: 256000
+       - A1/A2: 115200
+       - S2: 1000000
+    5. 하드웨어 연결 확인: USB 케이블 및 전원 연결 상태 확인
+  - 노드는 `respawn="true"`로 설정되어 있어 연결 실패 시 자동 재시도합니다.
+  - **RPLIDAR S1 사용 시**: 기본 baudrate가 256000으로 설정되어 있습니다. 다른 모델 사용 시 `serial_baudrate` 인자를 변경하세요.
 
 - `publish_ackermann` 또는 `publish_direct_controls` 인자를 조정하면 기존 Ackermann 파이프라인이나 직접 PWM 제어 중 원하는 경로만 사용할 수 있습니다.
 
