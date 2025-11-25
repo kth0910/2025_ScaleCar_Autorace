@@ -1,0 +1,55 @@
+<launch>
+  <!-- Common args -->
+  <arg name="vesc_port" default="/dev/ttyVesc"/>
+  <arg name="use_vesc_driver" default="false"/>
+  <arg name="use_ackermann_to_vesc" default="true"/>
+  <arg name="use_rviz" default="true"/>
+
+  <!-- RPLIDAR configuration -->
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="serial_baudrate" default="115200"/>
+  <arg name="frame_id" default="laser"/>
+  <arg name="angle_compensate" default="true"/>
+  <arg name="scan_topic" default="/scan"/>
+
+  <!-- Planner options -->
+  <arg name="publish_ackermann" default="true"/>
+  <arg name="publish_direct_controls" default="true"/>
+  <arg name="ackermann_topic" default="/ackermann_cmd"/>
+  <arg name="rviz_config" default="$(find main)/rviz/lidar_avoidance.rviz"/>
+
+  <!-- Optional VESC driver -->
+  <group if="$(arg use_vesc_driver)">
+    <include file="$(find vesc_driver)/launch/vesc_driver_node.launch">
+      <arg name="port" value="$(arg vesc_port)"/>
+    </include>
+  </group>
+
+  <!-- RPLIDAR -->
+  <include file="$(find rplidar_ros)/launch/rplidar.launch">
+    <arg name="serial_port" value="$(arg serial_port)"/>
+    <arg name="serial_baudrate" value="$(arg serial_baudrate)"/>
+    <arg name="frame_id" value="$(arg frame_id)"/>
+    <arg name="angle_compensate" value="$(arg angle_compensate)"/>
+  </include>
+
+  <!-- Ackermann -> VESC converter -->
+  <group if="$(arg use_ackermann_to_vesc)">
+    <rosparam command="load" file="$(find racecar)/config/racecar-v2/vesc.yaml"/>
+    <node pkg="vesc_ackermann" type="ackermann_to_vesc_node" name="ackermann_to_vesc" output="screen"/>
+  </group>
+
+  <!-- Lidar avoidance planner -->
+  <node pkg="main" type="lidar_avoidance.py" name="lidar_avoidance" output="screen">
+    <param name="scan_topic" value="$(arg scan_topic)"/>
+    <param name="publish_ackermann" value="$(arg publish_ackermann)"/>
+    <param name="publish_direct_controls" value="$(arg publish_direct_controls)"/>
+    <param name="ackermann_topic" value="$(arg ackermann_topic)"/>
+  </node>
+
+  <!-- Visualization -->
+  <group if="$(arg use_rviz)">
+    <node pkg="rviz" type="rviz" name="lidar_avoidance_rviz" args="-d $(arg rviz_config)"/>
+  </group>
+</launch>
+

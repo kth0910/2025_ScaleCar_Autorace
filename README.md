@@ -29,6 +29,25 @@ catkin_make
 roslaunch main main.launch
 ```
 
+## LiDAR 회피 주행 파이프라인
+
+- `main/src/lidar_avoidance.py` 노드는 `LaserScan(/scan)`을 받아 장애물 좌표를 마커로 시각화하고, 가장 안전한 gap을 따라 Ackermann 조향각과 `/commands/{motor,servo}` PWM을 동시에 출력합니다.
+- 새로운 `main/launch/lidar_avoidance.launch` 는 아래 구성요소를 한 번에 올립니다.
+  - `rplidar_ros` 드라이버 (포트/baud 인자 제공)
+  - 선택적 `vesc_driver`, `ackermann_to_vesc` 변환 및 VESC 파라미터(`racecar/racecar/config/racecar-v2/vesc.yaml`)
+  - RViz 설정(`main/rviz/lidar_avoidance.rviz`) : 장애물 MarkerArray, 목표 벡터, 플래닝 Path
+- 실행 예시
+
+```bash
+roslaunch main lidar_avoidance.launch \
+  use_vesc_driver:=true \
+  use_ackermann_to_vesc:=true \
+  serial_port:=/dev/ttyUSB0 \
+  vesc_port:=/dev/ttyVesc
+```
+
+- `publish_ackermann` 또는 `publish_direct_controls` 인자를 조정하면 기존 Ackermann 파이프라인이나 직접 PWM 제어 중 원하는 경로만 사용할 수 있습니다.
+
 ## 시스템 구성 및 아키텍처
 
 ![rosgraph](https://github.com/kmu-kobot/2023_ScaleCar_Autorace/assets/84698896/40a653a7-ce15-47c8-a24b-b4c1ff280f5d)
