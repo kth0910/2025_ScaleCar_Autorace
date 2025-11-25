@@ -30,7 +30,7 @@ class LidarAvoidancePlanner:
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.forward_fov = math.radians(rospy.get_param("~forward_fov_deg", 210.0))
         self.max_range = rospy.get_param("~max_range", 8.0)
-        self.safe_distance = rospy.get_param("~safe_distance", 0.8)
+        self.safe_distance = rospy.get_param("~safe_distance", 0.4)  # 50cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.30)  # 30cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.20)  # 차폭 반경 20cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 2.5)
@@ -60,7 +60,7 @@ class LidarAvoidancePlanner:
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
         self.min_servo = rospy.get_param("~min_servo", 0.0)
-        self.max_servo = rospy.get_param("~max_servo", 0.95)
+        self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
             rospy.get_param("~max_steering_angle_deg", 30.0)
         )
