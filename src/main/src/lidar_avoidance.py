@@ -235,11 +235,12 @@ class LidarAvoidancePlanner:
         
         selected = np.stack((ranges[mask], angles[mask]), axis=1)
         xy = np.zeros_like(selected)
-        xy[:, 0] = selected[:, 0] * np.cos(selected[:, 1])
-        xy[:, 1] = selected[:, 0] * np.sin(selected[:, 1])
+        # 라이다 좌표계 180도 회전: 좌표 반전
+        xy[:, 0] = -selected[:, 0] * np.cos(selected[:, 1])
+        xy[:, 1] = -selected[:, 0] * np.sin(selected[:, 1])
         
-        # 2단계: 전방 포인트만 선택
-        in_front = xy[:, 0] > 0.0
+        # 2단계: 전방 포인트만 선택 (180도 회전 후 전방은 음수 x)
+        in_front = xy[:, 0] < 0.0
         front_points = xy[in_front]
         
         if len(front_points) == 0:
@@ -282,10 +283,16 @@ class LidarAvoidancePlanner:
     ) -> bool:
         """
         전방 30도 각도 이내에 장애물(빨간색으로 표시되는 장애물)이 있는지 확인.
+        라이다 좌표계 180도 회전을 고려하여 각도에 π를 더한 위치를 확인.
         """
         # 전방 30도 이내 각도 필터링 (±15도)
+        # 라이다 좌표계 180도 회전: 각도에 π를 더한 위치가 전방
         front_angle_half = self.front_obstacle_angle * 0.5
-        front_mask = np.abs(angles) <= front_angle_half
+        rotated_angles = angles + math.pi
+        # 각도를 [-π, π] 범위로 정규화
+        rotated_angles = np.where(rotated_angles > math.pi, rotated_angles - 2 * math.pi, rotated_angles)
+        rotated_angles = np.where(rotated_angles < -math.pi, rotated_angles + 2 * math.pi, rotated_angles)
+        front_mask = np.abs(rotated_angles) <= front_angle_half
         
         if not np.any(front_mask):
             return False
@@ -323,6 +330,13 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
 
         target_angle = float(angles[idx])
+        # 라이다 좌표계 180도 회전: 각도에 π 더하기
+        target_angle = target_angle + math.pi
+        # 각도를 [-π, π] 범위로 정규화
+        if target_angle > math.pi:
+            target_angle -= 2 * math.pi
+        elif target_angle < -math.pi:
+            target_angle += 2 * math.pi
         target_distance = float(min(ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
@@ -377,6 +391,13 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
         
         target_angle = float(reverse_angles[idx])
+        # 라이다 좌표계 180도 회전: 각도에 π 더하기
+        target_angle = target_angle + math.pi
+        # 각도를 [-π, π] 범위로 정규화
+        if target_angle > math.pi:
+            target_angle -= 2 * math.pi
+        elif target_angle < -math.pi:
+            target_angle += 2 * math.pi
         target_distance = float(min(reverse_ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
