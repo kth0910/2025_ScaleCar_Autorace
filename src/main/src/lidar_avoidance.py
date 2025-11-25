@@ -132,7 +132,7 @@ class LidarAvoidancePlanner:
                 servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
                 
                 self._publish_path(scan.header, steering_angle, reverse_distance)
-                self._publish_target_marker(scan.header, steering_angle, reverse_distance)
+                self._publish_target_marker(scan.header, steering_angle, reverse_distance, is_reverse=True)
                 self._publish_motion_commands(
                     scan.header,
                     steering_angle,
@@ -167,7 +167,7 @@ class LidarAvoidancePlanner:
                     servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
                     
                     self._publish_path(scan.header, steering_angle, reverse_distance)
-                    self._publish_target_marker(scan.header, steering_angle, reverse_distance)
+                    self._publish_target_marker(scan.header, steering_angle, reverse_distance, is_reverse=True)
                     self._publish_motion_commands(
                         scan.header,
                         steering_angle,
@@ -191,7 +191,7 @@ class LidarAvoidancePlanner:
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
 
         self._publish_path(scan.header, steering_angle, target_distance)
-        self._publish_target_marker(scan.header, steering_angle, target_distance)
+        self._publish_target_marker(scan.header, steering_angle, target_distance, is_reverse=False)
         self._publish_motion_commands(
             scan.header,
             steering_angle,
@@ -488,7 +488,7 @@ class LidarAvoidancePlanner:
         self.marker_pub.publish(marker_array)
 
     def _publish_target_marker(
-        self, header, steering_angle: float, distance: float
+        self, header, steering_angle: float, distance: float, is_reverse: bool = False
     ) -> None:
         marker = Marker()
         marker.header = header
@@ -503,9 +503,7 @@ class LidarAvoidancePlanner:
         # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
         display_angle = -steering_angle * self.arrow_angle_scale
         
-        # 뒤로 향하는지 확인 (cos(angle) < 0이면 뒤로 향함)
-        is_reverse = math.cos(display_angle) < 0
-        
+        # is_reverse 파라미터로 후진 여부 확인 (함수 호출 시 전달받은 값 사용)
         if is_reverse:
             # 후진 시 빨간색으로 표시
             marker.color.r = 1.0
