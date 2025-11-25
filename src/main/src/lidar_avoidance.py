@@ -59,7 +59,7 @@ class LidarAvoidancePlanner:
         self.reverse_fov = math.radians(rospy.get_param("~reverse_fov_deg", 120.0))  # 후방 FOV
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
-        self.min_servo = rospy.get_param("~min_servo", 0.05)
+        self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.max_steering_angle = math.radians(
             rospy.get_param("~max_steering_angle_deg", 30.0)
@@ -501,8 +501,10 @@ class LidarAvoidancePlanner:
         marker.color.g = 0.8
         marker.color.b = 1.0
         marker.color.a = 0.9
-        marker.pose.orientation.z = math.sin(steering_angle * 0.5)
-        marker.pose.orientation.w = math.cos(steering_angle * 0.5)
+        # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전
+        display_angle = -steering_angle
+        marker.pose.orientation.z = math.sin(display_angle * 0.5)
+        marker.pose.orientation.w = math.cos(display_angle * 0.5)
         marker.lifetime = rospy.Duration(0.2)
         self.target_marker_pub.publish(marker)
 
@@ -518,10 +520,12 @@ class LidarAvoidancePlanner:
             travel = distance * ratio
             pose = PoseStamped()
             pose.header = header
-            pose.pose.position.x = travel * math.cos(steering_angle)
-            pose.pose.position.y = travel * math.sin(steering_angle)
-            pose.pose.orientation.z = math.sin(steering_angle * 0.5)
-            pose.pose.orientation.w = math.cos(steering_angle * 0.5)
+            # 라이다 좌표계 180도 회전 후 경로 방향 보정: 각도 반전
+            display_angle = -steering_angle
+            pose.pose.position.x = travel * math.cos(display_angle)
+            pose.pose.position.y = travel * math.sin(display_angle)
+            pose.pose.orientation.z = math.sin(display_angle * 0.5)
+            pose.pose.orientation.w = math.cos(display_angle * 0.5)
             path_msg.poses.append(pose)
         self.path_pub.publish(path_msg)
 
