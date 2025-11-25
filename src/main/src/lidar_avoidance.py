@@ -334,7 +334,7 @@ class LidarAvoidancePlanner:
         # 1단계: 거리 기준으로 장애물 후보 필터링
         mask = ranges < self.obstacle_threshold
         if not np.any(mask):
-            return np.zeros((0, 2), dtype=np.float32)
+            return np.zeros((0, 2), dtype=np.float32), 0.0
         
         selected = np.stack((ranges[mask], angles[mask]), axis=1)
         xy = np.zeros_like(selected)
@@ -347,7 +347,7 @@ class LidarAvoidancePlanner:
         front_points = xy[in_front]
         
         if len(front_points) == 0:
-            return np.zeros((0, 2), dtype=np.float32)
+            return np.zeros((0, 2), dtype=np.float32), 0.0
         
         # 3단계: 클러스터링으로 연속된 포인트만 장애물로 인식 (노이즈 제거)
         clustered_points = self._cluster_obstacle_points(front_points)
