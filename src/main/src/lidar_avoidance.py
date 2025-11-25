@@ -268,6 +268,8 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
 
         target_angle = float(angles[idx])
+        # 라이다 좌표계와 차량 좌표계 차이 보정 (각도 반전)
+        target_angle = -target_angle
         target_distance = float(min(ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
@@ -322,6 +324,8 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
         
         target_angle = float(reverse_angles[idx])
+        # 라이다 좌표계와 차량 좌표계 차이 보정 (각도 반전)
+        target_angle = -target_angle
         target_distance = float(min(reverse_ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
