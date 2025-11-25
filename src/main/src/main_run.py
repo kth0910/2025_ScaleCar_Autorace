@@ -104,7 +104,8 @@ class LaneFollower:
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.20)  # 20cm에서 완전 정지
         self.current_speed_pwm = self.max_pwm
-        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 500.0)  # PWM 변화율
+        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
+        self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
@@ -352,7 +353,8 @@ class LaneFollower:
     def _compute_speed_with_obstacle(self) -> float:
         """장애물 거리에 따라 속도 계산"""
         current_time = rospy.get_time()
-        dt = max(0.01, min(0.1, current_time - self.prev_time))
+        dt = max(0.001, min(0.1, current_time - self.prev_time))
+        self.prev_time = current_time  # 시간 업데이트
         
         # 기본 속도 (PWM)
         base_pwm = self.speed_value
@@ -380,13 +382,26 @@ class LaneFollower:
             # 장애물이 없으면 기본 속도
             target_pwm = base_pwm
         
-        # 점진적 속도 변화
+        # 이중 스무딩: 선형 제한 + 지수적 스무딩
+        # 1단계: 최대 변화량 제한 (급격한 변화 방지)
         max_pwm_change = self.speed_smoothing_rate * dt
         pwm_diff = target_pwm - self.current_speed_pwm
         if abs(pwm_diff) > max_pwm_change:
-            self.current_speed_pwm += math.copysign(max_pwm_change, pwm_diff)
+            limited_target = self.current_speed_pwm + math.copysign(max_pwm_change, pwm_diff)
         else:
-            self.current_speed_pwm = target_pwm
+            limited_target = target_pwm
+        
+        # 2단계: 지수적 스무딩 (더 부드러운 변화)
+        smoothed_pwm = (
+            (1.0 - self.speed_smoothing_factor) * self.current_speed_pwm
+            + self.speed_smoothing_factor * limited_target
+        )
+        
+        # 최소 변화량 이하는 무시 (미세한 진동 방지)
+        if abs(smoothed_pwm - self.current_speed_pwm) < 1.0:
+            smoothed_pwm = self.current_speed_pwm
+        
+        self.current_speed_pwm = smoothed_pwm
         
         return self.current_speed_pwm
 
