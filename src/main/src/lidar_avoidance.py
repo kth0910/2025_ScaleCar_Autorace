@@ -46,8 +46,8 @@ class LidarAvoidancePlanner:
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 1.5)  # 회피주행: 안전 속도로 제한
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.4)
-        self.max_pwm = rospy.get_param("~max_pwm", 1000.0)  # 기존 2000에서 안전 속도로 감소
-        self.min_pwm = rospy.get_param("~min_pwm", 500.0)   # 기존 1100에서 감소
+        self.max_pwm = rospy.get_param("~max_pwm", 1500.0)  # 기존 2000에서 안전 속도로 감소
+        self.min_pwm = rospy.get_param("~min_pwm", 900.0)   # 기존 1100에서 감소
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
