@@ -356,8 +356,8 @@ class LaneFollower:
         dt = max(0.001, min(0.1, current_time - self.prev_time))
         self.prev_time = current_time  # 시간 업데이트
         
-        # 기본 속도 (PWM)
-        base_pwm = self.speed_value
+        # 기본 속도 (PWM) - 범위 제한 (역회전 방지)
+        base_pwm = self._clamp(self.speed_value, self.min_pwm, self.max_pwm)
         
         # 장애물이 감지되면 속도 감소
         if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
@@ -372,15 +372,18 @@ class LaneFollower:
                     distance_in_range = closest - self.hard_stop_distance
                     speed_reduction_factor = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
             elif closest <= self.hard_stop_distance:
-                # 20cm 이하는 완전 정지
+                # 20cm 이하는 완전 정지 (min_pwm으로 설정, 역회전 방지)
                 speed_reduction_factor = 0.0
             
-            # 속도 계산 (PWM)
+            # 속도 계산 (PWM) - min_pwm 이상으로 유지 (역회전 방지)
             speed_range = self.max_pwm - self.min_pwm
             target_pwm = self.min_pwm + speed_range * speed_reduction_factor
         else:
-            # 장애물이 없으면 기본 속도
+            # 장애물이 없으면 기본 속도 (범위 제한)
             target_pwm = base_pwm
+        
+        # target_pwm을 범위 내로 확실히 제한 (역회전 방지)
+        target_pwm = self._clamp(target_pwm, self.min_pwm, self.max_pwm)
         
         # 이중 스무딩: 선형 제한 + 지수적 스무딩
         # 1단계: 최대 변화량 제한 (급격한 변화 방지)
@@ -391,17 +394,24 @@ class LaneFollower:
         else:
             limited_target = target_pwm
         
+        # limited_target도 범위 내로 제한
+        limited_target = self._clamp(limited_target, self.min_pwm, self.max_pwm)
+        
         # 2단계: 지수적 스무딩 (더 부드러운 변화)
         smoothed_pwm = (
             (1.0 - self.speed_smoothing_factor) * self.current_speed_pwm
             + self.speed_smoothing_factor * limited_target
         )
         
+        # smoothed_pwm을 범위 내로 확실히 제한 (역회전 방지)
+        smoothed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
+        
         # 최소 변화량 이하는 무시 (미세한 진동 방지)
         if abs(smoothed_pwm - self.current_speed_pwm) < 1.0:
             smoothed_pwm = self.current_speed_pwm
         
-        self.current_speed_pwm = smoothed_pwm
+        # 최종 값도 범위 확인 (이중 안전장치)
+        self.current_speed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
         
         return self.current_speed_pwm
 
