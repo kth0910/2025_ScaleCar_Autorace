@@ -2,18 +2,61 @@
   <!-- 선택 파라미터 -->
   <arg name="vesc_port" default="/dev/ttyVesc"/>
   <arg name="use_vesc" default="true"/>
+  <arg name="use_lidar" default="true"/>
+  <arg name="use_rviz" default="false"/>
+
+  <!-- RPLIDAR 설정 -->
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="serial_baudrate" default="256000"/>  <!-- S1/A3: 256000, A1/A2: 115200, S2: 1000000 -->
+  <arg name="frame_id" default="laser"/>
 
   <!-- VESC 드라이버 (필요 시) -->
   <group if="$(arg use_vesc)">
     <include file="$(find vesc_driver)/launch/vesc_driver_node.launch">
       <arg name="port" value="$(arg vesc_port)"/>
     </include>
+    
+    <!-- Ackermann -> VESC converter -->
+    <rosparam command="load" file="$(find racecar)/config/racecar-v2/vesc.yaml"/>
+    <node pkg="vesc_ackermann" type="ackermann_to_vesc_node" name="ackermann_to_vesc" output="screen"/>
+  </group>
+
+  <!-- RPLIDAR Hardware (라이다 회피 사용 시) -->
+  <group if="$(arg use_lidar)">
+    <node name="rplidarNode" pkg="rplidar_ros" type="rplidarNode" output="screen" respawn="true" respawn_delay="2">
+      <param name="channel_type" type="string" value="serial"/>
+      <param name="serial_port" type="string" value="$(arg serial_port)"/>
+      <param name="serial_baudrate" type="int" value="$(arg serial_baudrate)"/>
+      <param name="frame_id" type="string" value="$(arg frame_id)"/>
+      <param name="inverted" type="bool" value="false"/>
+      <param name="angle_compensate" type="bool" value="true"/>
+      <param name="scan_mode" type="string" value=""/>
+      <param name="scan_frequency" type="double" value="10.0"/>
+    </node>
   </group>
 
   <!-- 카메라 + 이미지 보정 -->
   <include file="$(find main)/launch/usb_cam_headless.launch"/>
   <node pkg="image_proc" type="image_proc" name="image_proc" ns="/usb_cam" output="screen"/>
 
-  <!-- 단순 차선 추종 노드 -->
+  <!-- 라이다 회피 노드 (카메라 퓨전 포함) -->
+  <group if="$(arg use_lidar)">
+    <node pkg="main" type="lidar_avoidance.py" name="lidar_avoidance" output="screen">
+      <param name="enable_camera_fusion" value="true"/>
+      <param name="camera_topic" value="/usb_cam/image_rect_color"/>
+      <param name="camera_info_topic" value="/usb_cam/camera_info"/>
+      <param name="lidar_frame" value="laser"/>
+      <param name="camera_frame" value="usb_cam"/>
+      <param name="lidar_weight" value="0.7"/>
+      <param name="camera_weight" value="0.3"/>
+    </node>
+  </group>
+
+  <!-- 차선 추종 노드 (라이다 우선, 장애물 없을 때만 동작) -->
   <node name="lane_follower" type="main_run.py" pkg="main" output="screen"/>
+
+  <!-- RViz (선택적) -->
+  <group if="$(arg use_rviz)">
+    <node pkg="rviz" type="rviz" name="main_rviz" args="-d $(find main)/rviz/lidar_avoidance.rviz"/>
+  </group>
 </launch>
