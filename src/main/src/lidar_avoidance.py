@@ -36,6 +36,7 @@ class LidarAvoidancePlanner:
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 2.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.60)  # 60cm부터 장애물 인식
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.60)  # 60cm부터 속도 감소 시작
+        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 30.0))  # 전방 30도 이내 장애물 감지 각도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
@@ -116,13 +117,42 @@ class LidarAvoidancePlanner:
         obstacle_points = self._collect_obstacle_points(ranges, angles)
         self._publish_obstacle_markers(scan.header, obstacle_points)
 
+        # 전방 30도 이내 장애물 감지 확인
+        front_obstacle_detected = self._check_front_obstacle(ranges, angles)
+        
+        if front_obstacle_detected:
+            # 전방 30도 이내 장애물 감지 시 멈추고 후진 기동
+            rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Stopping and reversing.")
+            reverse_angle, reverse_distance, reverse_score = self._select_reverse_target(ranges, angles)
+            if reverse_angle is not None:
+                steering_angle = clamp(reverse_angle, -self.max_steering_angle, self.max_steering_angle)
+                servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
+                servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
+                
+                self._publish_path(scan.header, steering_angle, reverse_distance)
+                self._publish_target_marker(scan.header, steering_angle, reverse_distance)
+                self._publish_motion_commands(
+                    scan.header,
+                    steering_angle,
+                    self.reverse_speed,
+                    self.reverse_pwm,
+                    servo_cmd,
+                    False,  # 후진 중에는 emergency_stop 아님
+                )
+                return
+            else:
+                # 후진 경로도 없으면 정지
+                self._publish_stop(scan.header, reason="front_obstacle_no_reverse")
+                return
+
         (
             target_angle,
             target_distance,
             selected_score,
         ) = self._select_target(ranges, angles)
 
-        emergency_stop = closest < self.hard_stop_distance
+        # 전방 30도 이내 장애물이 없으면 회피 기동 계속 (멈추지 않음)
+        emergency_stop = False  # 전방 30도 이내 장애물이 없으면 정지하지 않음
         if target_angle is None:
             # 전방에 경로가 없을 때 후진 회피 시도
             if self.enable_reverse_escape:
@@ -205,8 +235,10 @@ class LidarAvoidancePlanner:
         
         selected = np.stack((ranges[mask], angles[mask]), axis=1)
         xy = np.zeros_like(selected)
+        # 라이다 좌표계: x=전방, y=좌측
+        # RViz 표시를 위해 y축 반전 (라이다 좌표계와 RViz 좌표계 일치)
         xy[:, 0] = selected[:, 0] * np.cos(selected[:, 1])
-        xy[:, 1] = selected[:, 0] * np.sin(selected[:, 1])
+        xy[:, 1] = -selected[:, 0] * np.sin(selected[:, 1])  # y축 반전
         
         # 2단계: 전방 포인트만 선택
         in_front = xy[:, 0] > 0.0
@@ -246,6 +278,31 @@ class LidarAvoidancePlanner:
             return np.zeros((0, 2), dtype=np.float32)
         
         return np.array(valid_points, dtype=np.float32)
+
+    def _check_front_obstacle(
+        self, ranges: np.ndarray, angles: np.ndarray
+    ) -> bool:
+        """
+        전방 30도 각도 이내에 장애물(빨간색으로 표시되는 장애물)이 있는지 확인.
+        """
+        # 전방 30도 이내 각도 필터링 (±15도)
+        front_angle_half = self.front_obstacle_angle * 0.5
+        front_mask = np.abs(angles) <= front_angle_half
+        
+        if not np.any(front_mask):
+            return False
+        
+        front_ranges = ranges[front_mask]
+        
+        # 장애물 임계값 이내에 포인트가 있는지 확인
+        obstacle_mask = front_ranges < self.obstacle_threshold
+        
+        if not np.any(obstacle_mask):
+            return False
+        
+        # 최소 포인트 수 확인 (노이즈 필터링)
+        obstacle_count = np.sum(obstacle_mask)
+        return obstacle_count >= self.min_obstacle_points
 
     def _select_target(
         self, ranges: np.ndarray, angles: np.ndarray
