@@ -182,12 +182,23 @@ class LidarAvoidancePlanner:
         if front_obstacle_detected:
             rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Attempting to avoid by turning left/right.")
 
+        # 장애물 포인트를 각도로 변환 (회피를 위해)
+        obstacle_angles = None
+        if len(obstacle_points) > 0:
+            # 장애물 포인트의 각도 계산 (라이다 좌표계 기준)
+            obstacle_angles = np.arctan2(obstacle_points[:, 1], obstacle_points[:, 0])
+            # 라이다 좌표계 180도 회전 보정: 각도에서 π 빼기
+            obstacle_angles = obstacle_angles - math.pi
+            # 각도를 [-π, π] 범위로 정규화
+            obstacle_angles = np.where(obstacle_angles > math.pi, obstacle_angles - 2 * math.pi, obstacle_angles)
+            obstacle_angles = np.where(obstacle_angles < -math.pi, obstacle_angles + 2 * math.pi, obstacle_angles)
+
         # 전방 장애물이 있어도 좌우로 회피 경로를 찾음
         (
             target_angle,
             target_distance,
             selected_score,
-        ) = self._select_target(ranges, angles, front_obstacle_detected)
+        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
 
         # 전방 30도 이내 장애물이 없으면 회피 기동 계속
         emergency_stop = False
@@ -521,7 +532,8 @@ class LidarAvoidancePlanner:
             return np.zeros((0, 2), dtype=np.float32), 0.0
 
     def _select_target(
-        self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False
+        self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False,
+        obstacle_angles: Optional[np.ndarray] = None
     ) -> Tuple[Optional[float], float, float]:
         clearance = np.clip(ranges - self.inflation_margin, 0.0, self.max_range)
         safe_mask = clearance > self.safe_distance
@@ -541,10 +553,37 @@ class LidarAvoidancePlanner:
         
         heading_pref = 1.0 - (np.abs(angles) / (self.forward_fov * 0.5))
         heading_pref = np.clip(heading_pref, 0.0, 1.0)
+        
+        # 장애물 회피 페널티 계산
+        obstacle_penalty = np.ones_like(angles, dtype=np.float32)
+        if obstacle_angles is not None and len(obstacle_angles) > 0:
+            # 각 각도에 대해 가장 가까운 장애물까지의 각도 거리 계산
+            for i, angle in enumerate(angles):
+                # 각도 차이 계산 (최소 각도 차이)
+                angle_diffs = np.abs(obstacle_angles - angle)
+                # 각도 차이를 [-π, π] 범위로 정규화
+                angle_diffs = np.minimum(angle_diffs, 2 * math.pi - angle_diffs)
+                min_obstacle_angle_diff = float(np.min(angle_diffs))
+                
+                # 장애물로부터의 각도 거리에 따라 페널티 적용
+                # 30도 이내: 강한 페널티 (점수 크게 감소)
+                # 30도 ~ 60도: 중간 페널티
+                # 60도 이상: 페널티 없음
+                if min_obstacle_angle_diff < math.radians(30.0):
+                    # 30도 이내: 점수를 0.1로 감소
+                    obstacle_penalty[i] = 0.1
+                elif min_obstacle_angle_diff < math.radians(60.0):
+                    # 30도 ~ 60도: 점수를 0.3으로 감소
+                    obstacle_penalty[i] = 0.3
+                else:
+                    # 60도 이상: 페널티 없음
+                    obstacle_penalty[i] = 1.0
+        
         scores = (
             effective_clearance_weight * norm_clearance
             + effective_heading_weight * heading_pref
-        )
+        ) * obstacle_penalty  # 장애물 회피 페널티 적용
+        
         scores[~safe_mask] = -np.inf
         idx = int(np.argmax(scores))
         if not np.isfinite(scores[idx]):
