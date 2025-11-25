@@ -279,58 +279,64 @@ class LidarAvoidancePlanner:
     def _collect_obstacle_points(
         self, ranges: np.ndarray, angles: np.ndarray, header=None
     ) -> Tuple[np.ndarray, float]:
-        # 1단계: 거리 기준으로 장애물 후보 필터링
-        mask = ranges < self.obstacle_threshold
-        candidate_count = np.sum(mask)
-        if not np.any(mask):
-            rospy.logdebug_throttle(2.0, "No obstacle candidates found (all ranges >= %.2fm)", self.obstacle_threshold)
+        # 1단계: 라이다 좌표계에서 카테시안 좌표로 변환
+        # 라이다 좌표계가 180도 회전되어 있다고 가정:
+        # - 라이다의 0도가 실제로는 후방을 가리킴
+        # - 따라서 각도에 π를 더하거나 좌표를 반전해야 함
+        # 좌표 변환: x = -r * cos(angle), y = -r * sin(angle)
+        # 이렇게 하면 라이다의 0도 방향이 실제 전방(x < 0)이 됨
+        xy = np.zeros((len(ranges), 2), dtype=np.float32)
+        xy[:, 0] = -ranges * np.cos(angles)  # 전방이 음수 x
+        xy[:, 1] = -ranges * np.sin(angles)  # 좌측이 음수 y
+        
+        # 2단계: 전방 포인트만 선택 (x < 0이 전방, 즉 라이다의 0도 방향)
+        # 하지만 실제로는 라이다의 각도 범위를 확인해야 함
+        # 일단 모든 포인트를 사용하되, 전방 FOV 내의 포인트만 장애물로 인식
+        # 전방 FOV는 이미 _prepare_scan에서 필터링되었으므로 여기서는 모든 포인트가 전방
+        
+        # 3단계: 전방의 모든 포인트를 장애물로 인식 (거리 제한 없음)
+        # 벽 등 멀리 있는 장애물도 인식하기 위해 거리 제한 제거
+        obstacle_points = xy  # 모든 포인트를 장애물로 인식
+        front_count = len(obstacle_points)
+        
+        if len(obstacle_points) == 0:
+            rospy.logdebug_throttle(2.0, "No obstacle points found")
             return np.zeros((0, 2), dtype=np.float32), 0.0
         
-        selected = np.stack((ranges[mask], angles[mask]), axis=1)
-        xy = np.zeros_like(selected)
-        # 라이다 좌표계 180도 회전: 좌표 반전
-        xy[:, 0] = -selected[:, 0] * np.cos(selected[:, 1])
-        xy[:, 1] = -selected[:, 0] * np.sin(selected[:, 1])
+        # 4단계: 가까운 장애물 우선 인식 (선택적 필터링)
+        # 가까운 장애물이 있으면 그것을 우선하되, 멀리 있는 장애물도 포함
+        distances = np.linalg.norm(obstacle_points, axis=1)
+        min_dist = float(np.min(distances))
         
-        # 2단계: 전방 포인트만 선택 (180도 회전 후 전방은 음수 x)
-        in_front = xy[:, 0] < 0.0
-        front_points = xy[in_front]
-        front_count = len(front_points)
+        # 가까운 장애물이 있으면 로그 출력
+        if min_dist < self.obstacle_threshold:
+            close_count = np.sum(distances < self.obstacle_threshold)
+            rospy.logdebug_throttle(2.0, "Found %d close obstacles (< %.2fm) out of %d total points, min_dist=%.2fm", 
+                                    close_count, self.obstacle_threshold, front_count, min_dist)
+        else:
+            rospy.logdebug_throttle(2.0, "No close obstacles, but %d front points detected as obstacles, min_dist=%.2fm", 
+                                    front_count, min_dist)
         
-        if len(front_points) == 0:
-            rospy.logdebug_throttle(2.0, "No front points found (candidates: %d)", candidate_count)
-            return np.zeros((0, 2), dtype=np.float32), 0.0
-        
-        # 3단계: 클러스터링으로 연속된 포인트만 장애물로 인식 (노이즈 제거)
-        # 클러스터링이 너무 엄격하면 모든 포인트를 반환하도록 완화
-        clustered_points = self._cluster_obstacle_points(front_points)
-        clustered_count = len(clustered_points)
-        
-        # 클러스터링 결과가 없으면 원본 포인트 사용 (가까운 장애물은 클러스터링 없이도 인식)
-        if clustered_count == 0 and front_count > 0:
-            # 가장 가까운 포인트의 거리 확인
-            distances = np.linalg.norm(front_points, axis=1)
-            min_dist = float(np.min(distances))
-            # 매우 가까운 장애물(0.4m 이내)은 클러스터링 없이도 인식
-            if min_dist < 0.4:
-                rospy.logwarn_throttle(1.0, "Very close obstacle detected (%.2fm) but clustering failed. Using all front points.", min_dist)
-                clustered_points = front_points
-                clustered_count = len(clustered_points)
-        
-        rospy.logdebug_throttle(2.0, "Obstacle detection: candidates=%d, front=%d, clustered=%d", 
-                                candidate_count, front_count, clustered_count)
+        # 4단계: 클러스터링으로 노이즈 제거 (선택적)
+        # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
+        if len(obstacle_points) > 10:  # 포인트가 많을 때만 클러스터링
+            clustered_points = self._cluster_obstacle_points(obstacle_points)
+            if len(clustered_points) > 0:
+                obstacle_points = clustered_points
+                rospy.logdebug_throttle(2.0, "Clustered to %d points", len(clustered_points))
         
         # 라이다 신뢰도 계산 (거리 기반: 가까울수록 높은 신뢰도)
-        if len(clustered_points) > 0:
-            distances = np.linalg.norm(clustered_points, axis=1)
+        if len(obstacle_points) > 0:
+            distances = np.linalg.norm(obstacle_points, axis=1)
             min_dist = float(np.min(distances))
             # 0.3m 이내: 신뢰도 1.0, 0.6m: 신뢰도 0.5, 그 이상: 신뢰도 감소
             lidar_confidence = max(0.0, min(1.0, 1.0 - (min_dist - 0.3) / 0.3))
-            rospy.logdebug_throttle(2.0, "Closest obstacle: %.2fm, confidence: %.2f", min_dist, lidar_confidence)
+            rospy.logdebug_throttle(2.0, "Obstacle detection: %d points, closest: %.2fm, confidence: %.2f", 
+                                    len(obstacle_points), min_dist, lidar_confidence)
         else:
             lidar_confidence = 0.0
         
-        return clustered_points, lidar_confidence
+        return obstacle_points, lidar_confidence
     
     def _cluster_obstacle_points(self, points: np.ndarray) -> np.ndarray:
         """
