@@ -10,6 +10,7 @@ import numpy as np
 
 from std_msgs.msg import Float64, Bool
 from sensor_msgs.msg import Image
+from ackermann_msgs.msg import AckermannDriveStamped
 from cv_bridge import CvBridge
 
 from warper import Warper
@@ -60,10 +61,11 @@ class LaneFollower:
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
         
         # 라이다 회피 우선: lidar_avoidance가 제어 중인지 확인
-        # lidar_avoidance가 /commands/servo/position을 발행하면 라이다 제어 중
+        # lidar_avoidance가 제어 중인지 나타내는 토픽 구독
         self.lidar_controlling = False
         self.last_lidar_servo_time = 0.0
         self.lidar_timeout = 0.5  # 0.5초 동안 라이다 제어가 없으면 카메라 제어 사용
+        self.last_servo_publish_time = 0.0  # 자신이 발행한 시간 추적
 
         self.enable_viz = rospy.get_param(
             "~enable_viz",
@@ -86,8 +88,8 @@ class LaneFollower:
         self.prev_time = rospy.get_time()
         self.initialized = False
         
-        # 라이다 제어 감지: lidar_avoidance가 서보 명령을 발행하는지 확인
-        rospy.Subscriber("/commands/servo/position", Float64, self._lidar_servo_callback, queue_size=1)
+        # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중
+        rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
@@ -183,13 +185,20 @@ class LaneFollower:
         )
         self.prev_servo = smoothed_servo
 
-        # 라이다 우선: 라이다가 제어 중이면 카메라 제어 발행하지 않음
+        # 라이다 우선: lidar_avoidance가 제어 중인지 확인
+        # lidar_avoidance는 /ackermann_cmd를 발행하므로, 이를 확인하거나
+        # 간단히 타임아웃 기반으로 처리 (lidar_avoidance가 활성화되어 있으면 주기적으로 제어)
         current_time = rospy.get_time()
-        if current_time - self.last_lidar_servo_time < self.lidar_timeout:
-            # 라이다가 최근에 제어 명령을 발행했으면 카메라 제어 발행하지 않음
-            return
+        
+        # 자신이 방금 발행한 메시지가 아닌 경우에만 라이다 제어로 간주
+        # (자신이 발행한 메시지는 무시)
+        if current_time - self.last_servo_publish_time > 0.1:  # 0.1초 이내에 발행하지 않았으면
+            if current_time - self.last_lidar_servo_time < self.lidar_timeout:
+                # 라이다가 최근에 제어 명령을 발행했으면 카메라 제어 발행하지 않음
+                return
 
         # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
+        self.last_servo_publish_time = current_time
         self.speed_pub.publish(Float64(self.speed_value))
         self.steering_pub.publish(Float64(smoothed_servo))
 
@@ -315,8 +324,8 @@ class LaneFollower:
     def _clamp(value, low, high):
         return max(low, min(high, value))
 
-    def _lidar_servo_callback(self, msg):
-        """라이다가 서보 명령을 발행하면 호출됨 (라이다 제어 중임을 표시)"""
+    def _lidar_ackermann_callback(self, msg):
+        """라이다가 ackermann 명령을 발행하면 호출됨 (라이다 제어 중임을 표시)"""
         self.last_lidar_servo_time = rospy.get_time()
         self.lidar_controlling = True
 

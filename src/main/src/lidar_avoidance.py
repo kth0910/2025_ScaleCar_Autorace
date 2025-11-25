@@ -184,6 +184,8 @@ class LidarAvoidancePlanner:
             rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Stopping and reversing.")
             reverse_angle, reverse_distance, reverse_score = self._select_reverse_target(ranges, angles)
             if reverse_angle is not None:
+                rospy.logwarn("REVERSING: angle=%.2f deg, distance=%.2f m, speed=%.2f m/s, pwm=%.0f", 
+                            math.degrees(reverse_angle), reverse_distance, self.reverse_speed, self.reverse_pwm)
                 steering_angle = clamp(reverse_angle, -self.max_steering_angle, self.max_steering_angle)
                 servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
                 servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
@@ -201,6 +203,7 @@ class LidarAvoidancePlanner:
                 return
             else:
                 # 후진 경로도 없으면 정지
+                rospy.logwarn_throttle(1.0, "No reverse path found. Stopping.")
                 self._publish_stop(scan.header, reason="front_obstacle_no_reverse")
                 return
 
@@ -268,8 +271,22 @@ class LidarAvoidancePlanner:
         if not ranges.size:
             return None
 
+        # 전방 FOV + 후방 FOV 모두 포함 (후진 회피를 위해)
         fov_half = self.forward_fov * 0.5
-        within_fov = np.abs(angles) <= fov_half
+        reverse_fov_half = self.reverse_fov * 0.5
+        # 전방 FOV: |angle| <= forward_fov/2
+        forward_mask = np.abs(angles) <= fov_half
+        
+        # 후방 FOV: |angle| > 90도 && |angle - 180도| <= reverse_fov/2
+        reverse_base_mask = np.abs(angles) > math.pi / 2.0
+        reverse_mask = np.zeros_like(reverse_base_mask, dtype=bool)
+        if np.any(reverse_base_mask):
+            # 후방 각도를 180도 기준으로 정규화
+            normalized_reverse = np.abs(np.abs(angles[reverse_base_mask]) - math.pi)
+            reverse_mask[reverse_base_mask] = normalized_reverse <= reverse_fov_half
+        
+        # 전방 또는 후방 FOV 내 포인트만 선택
+        within_fov = forward_mask | reverse_mask
         ranges = ranges[within_fov]
         angles = angles[within_fov]
         if not ranges.size:
@@ -599,6 +616,7 @@ class LidarAvoidancePlanner:
         # 후방 각도 범위: 90도 ~ 180도, -90도 ~ -180도
         reverse_mask = np.abs(angles) > math.pi / 2.0  # |angle| > 90도
         if not np.any(reverse_mask):
+            rospy.logdebug_throttle(2.0, "No reverse angles found (|angle| > 90deg)")
             return None, 0.0, 0.0
         
         reverse_ranges = ranges[reverse_mask]
