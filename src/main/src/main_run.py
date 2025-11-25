@@ -8,7 +8,7 @@ import rospy
 import cv2
 import numpy as np
 
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, Bool
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
@@ -58,6 +58,12 @@ class LaneFollower:
         self.error_pub = rospy.Publisher("/lane_error", Float64, queue_size=1)
 
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
+        
+        # 라이다 회피 우선: lidar_avoidance가 제어 중인지 확인
+        # lidar_avoidance가 /commands/servo/position을 발행하면 라이다 제어 중
+        self.lidar_controlling = False
+        self.last_lidar_servo_time = 0.0
+        self.lidar_timeout = 0.5  # 0.5초 동안 라이다 제어가 없으면 카메라 제어 사용
 
         self.enable_viz = rospy.get_param(
             "~enable_viz",
@@ -79,6 +85,9 @@ class LaneFollower:
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
         self.initialized = False
+        
+        # 라이다 제어 감지: lidar_avoidance가 서보 명령을 발행하는지 확인
+        rospy.Subscriber("/commands/servo/position", Float64, self._lidar_servo_callback, queue_size=1)
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
@@ -165,7 +174,8 @@ class LaneFollower:
             delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
             limited_target = self.prev_servo + delta_servo
         else:
-            limited_target = self.prev_servo + 0.5 * (self.steering_offset - self.prev_servo)
+            # 차선이 검출되지 않으면 기존 방향 유지
+            limited_target = self.prev_servo
 
         smoothed_servo = (
             self.steering_smoothing * self.prev_servo
@@ -173,6 +183,13 @@ class LaneFollower:
         )
         self.prev_servo = smoothed_servo
 
+        # 라이다 우선: 라이다가 제어 중이면 카메라 제어 발행하지 않음
+        current_time = rospy.get_time()
+        if current_time - self.last_lidar_servo_time < self.lidar_timeout:
+            # 라이다가 최근에 제어 명령을 발행했으면 카메라 제어 발행하지 않음
+            return
+
+        # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
         self.speed_pub.publish(Float64(self.speed_value))
         self.steering_pub.publish(Float64(smoothed_servo))
 
@@ -297,6 +314,11 @@ class LaneFollower:
     @staticmethod
     def _clamp(value, low, high):
         return max(low, min(high, value))
+
+    def _lidar_servo_callback(self, msg):
+        """라이다가 서보 명령을 발행하면 호출됨 (라이다 제어 중임을 표시)"""
+        self.last_lidar_servo_time = rospy.get_time()
+        self.lidar_controlling = True
 
     @staticmethod
     def _nothing(_):
