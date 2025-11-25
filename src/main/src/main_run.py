@@ -76,6 +76,25 @@ class LaneFollower:
         # 퍼블리셔
         self.speed_pub = rospy.Publisher(self.speed_topic, Float64, queue_size=1)
         self.steering_pub = rospy.Publisher(self.servo_topic, Float64, queue_size=1)
+        # 보간기가 없을 때를 위한 자동 폴백 (직접 토픽도 동시에 준비)
+        self.speed_fallback_topic = rospy.get_param(
+            "~fallback_motor_topic", "/commands/motor/speed"
+        )
+        self.servo_fallback_topic = rospy.get_param(
+            "~fallback_servo_topic", "/commands/servo/position"
+        )
+        self.speed_fallback_pub = None
+        self.servo_fallback_pub = None
+        if self.speed_topic != self.speed_fallback_topic:
+            self.speed_fallback_pub = rospy.Publisher(
+                self.speed_fallback_topic, Float64, queue_size=1
+            )
+        if self.servo_topic != self.servo_fallback_topic:
+            self.servo_fallback_pub = rospy.Publisher(
+                self.servo_fallback_topic, Float64, queue_size=1
+            )
+        self._speed_fallback_warned = False
+        self._servo_fallback_warned = False
         self.center_pub = rospy.Publisher("/lane_center_x", Float64, queue_size=1)
         self.error_pub = rospy.Publisher("/lane_error", Float64, queue_size=1)
 
@@ -231,13 +250,13 @@ class LaneFollower:
         # 속도는 항상 main_run.py에서 제어 (라이다 제어 중이어도)
         # 라이다가 제어 중일 때는 조향만 라이다가 제어하고, 속도는 main_run.py가 제어
         target_speed_pwm = self._compute_speed_with_obstacle()
-        self.speed_pub.publish(Float64(target_speed_pwm))
+        self._publish_speed_command(target_speed_pwm)
         
         # 조향은 라이다가 제어 중이면 발행하지 않음
         if not is_lidar_controlling:
             # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
             self.last_servo_publish_time = current_time
-            self.steering_pub.publish(Float64(smoothed_servo))
+            self._publish_servo_command(smoothed_servo)
 
         if self.enable_viz:
             cv2.imshow("Lane Frame", frame)
@@ -435,6 +454,44 @@ class LaneFollower:
         self.current_speed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
         
         return self.current_speed_pwm
+
+    def _publish_speed_command(self, value: float) -> None:
+        msg = Float64(value)
+        self.speed_pub.publish(msg)
+        if self.speed_fallback_pub and self.speed_pub.get_num_connections() == 0:
+            if not self._speed_fallback_warned:
+                rospy.logwarn(
+                    "No subscribers on %s. Falling back to %s.",
+                    self.speed_topic,
+                    self.speed_fallback_topic,
+                )
+                self._speed_fallback_warned = True
+            self.speed_fallback_pub.publish(Float64(value))
+        elif self._speed_fallback_warned and self.speed_pub.get_num_connections() > 0:
+            rospy.loginfo(
+                "Primary speed topic %s has subscribers again. Stopping fallback.",
+                self.speed_topic,
+            )
+            self._speed_fallback_warned = False
+
+    def _publish_servo_command(self, value: float) -> None:
+        msg = Float64(value)
+        self.steering_pub.publish(msg)
+        if self.servo_fallback_pub and self.steering_pub.get_num_connections() == 0:
+            if not self._servo_fallback_warned:
+                rospy.logwarn(
+                    "No subscribers on %s. Falling back to %s.",
+                    self.servo_topic,
+                    self.servo_fallback_topic,
+                )
+                self._servo_fallback_warned = True
+            self.servo_fallback_pub.publish(Float64(value))
+        elif self._servo_fallback_warned and self.steering_pub.get_num_connections() > 0:
+            rospy.loginfo(
+                "Primary servo topic %s has subscribers again. Stopping fallback.",
+                self.servo_topic,
+            )
+            self._servo_fallback_warned = False
 
     @staticmethod
     def _nothing(_):
