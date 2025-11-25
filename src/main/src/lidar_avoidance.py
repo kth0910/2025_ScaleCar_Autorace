@@ -64,6 +64,8 @@ class LidarAvoidancePlanner:
         self.max_steering_angle = math.radians(
             rospy.get_param("~max_steering_angle_deg", 30.0)
         )
+        # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
+        self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
 
         # ROS I/O
         rospy.Subscriber(
@@ -497,12 +499,24 @@ class LidarAvoidancePlanner:
         marker.scale.x = max(distance, 0.1)
         marker.scale.y = 0.08
         marker.scale.z = 0.08
-        marker.color.r = 0.1
-        marker.color.g = 0.8
-        marker.color.b = 1.0
         marker.color.a = 0.9
-        # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전
-        display_angle = -steering_angle
+        # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
+        display_angle = -steering_angle * self.arrow_angle_scale
+        
+        # 뒤로 향하는지 확인 (cos(angle) < 0이면 뒤로 향함)
+        is_reverse = math.cos(display_angle) < 0
+        
+        if is_reverse:
+            # 후진 시 빨간색으로 표시
+            marker.color.r = 1.0
+            marker.color.g = 0.1
+            marker.color.b = 0.1
+        else:
+            # 전진 시 파란색으로 표시
+            marker.color.r = 0.1
+            marker.color.g = 0.8
+            marker.color.b = 1.0
+        
         marker.pose.orientation.z = math.sin(display_angle * 0.5)
         marker.pose.orientation.w = math.cos(display_angle * 0.5)
         marker.lifetime = rospy.Duration(0.2)
@@ -520,8 +534,8 @@ class LidarAvoidancePlanner:
             travel = distance * ratio
             pose = PoseStamped()
             pose.header = header
-            # 라이다 좌표계 180도 회전 후 경로 방향 보정: 각도 반전
-            display_angle = -steering_angle
+            # 라이다 좌표계 180도 회전 후 경로 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
+            display_angle = -steering_angle * self.arrow_angle_scale
             pose.pose.position.x = travel * math.cos(display_angle)
             pose.pose.position.y = travel * math.sin(display_angle)
             pose.pose.orientation.z = math.sin(display_angle * 0.5)
