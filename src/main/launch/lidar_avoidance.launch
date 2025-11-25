@@ -1,7 +1,7 @@
 <launch>
   <!-- Common args -->
   <arg name="vesc_port" default="/dev/ttyVesc"/>
-  <arg name="use_vesc_driver" default="false"/>
+  <arg name="use_vesc_driver" default="true"/>  <!-- VESC 드라이버 활성화 (회피주행 필수) -->
   <arg name="use_ackermann_to_vesc" default="true"/>
   <arg name="use_rviz" default="true"/>
 
@@ -19,7 +19,7 @@
   <arg name="ackermann_topic" default="/ackermann_cmd"/>
   <arg name="rviz_config" default="$(find main)/rviz/lidar_avoidance.rviz"/>
 
-  <!-- Optional VESC driver -->
+  <!-- VESC driver (required for obstacle avoidance) -->
   <group if="$(arg use_vesc_driver)">
     <include file="$(find vesc_driver)/launch/vesc_driver_node.launch">
       <arg name="port" value="$(arg vesc_port)"/>
