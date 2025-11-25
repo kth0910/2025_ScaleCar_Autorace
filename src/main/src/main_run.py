@@ -90,6 +90,21 @@ class LaneFollower:
         
         # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중
         rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
+        
+        # 라이다 장애물 거리 구독 (속도 제어용) - 초기화 먼저
+        self.closest_obstacle = None
+        self.last_obstacle_time = 0.0
+        rospy.Subscriber("lidar_avoidance/closest_obstacle", Float64, self._obstacle_distance_callback, queue_size=1)
+        
+        # 속도 제어 파라미터
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.4)  # m/s
+        self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
+        self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
+        self.min_pwm = rospy.get_param("~min_pwm", 900.0)
+        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
+        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.20)  # 20cm에서 완전 정지
+        self.current_speed_pwm = self.max_pwm
+        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 500.0)  # PWM 변화율
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
