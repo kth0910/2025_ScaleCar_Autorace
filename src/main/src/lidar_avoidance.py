@@ -205,9 +205,8 @@ class LidarAvoidancePlanner:
         
         selected = np.stack((ranges[mask], angles[mask]), axis=1)
         xy = np.zeros_like(selected)
-        # 라이다 좌표계 반전: y축 반대로
         xy[:, 0] = selected[:, 0] * np.cos(selected[:, 1])
-        xy[:, 1] = -selected[:, 0] * np.sin(selected[:, 1])  # y축 반전
+        xy[:, 1] = selected[:, 0] * np.sin(selected[:, 1])
         
         # 2단계: 전방 포인트만 선택
         in_front = xy[:, 0] > 0.0
@@ -269,7 +268,8 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
 
         target_angle = float(angles[idx])
-        # y축 반전으로 인해 각도도 반대로 계산됨
+        # 라이다 좌표계에서 차량 좌표계로 변환 (각도 반전)
+        # 라이다: 양수 각도 = 좌측, 차량: 양수 조향각 = 좌측이므로 반전 필요
         target_angle = -target_angle
         target_distance = float(min(ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
@@ -325,7 +325,7 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
         
         target_angle = float(reverse_angles[idx])
-        # 라이다 좌표계와 차량 좌표계 차이 보정 (각도 반전)
+        # 라이다 좌표계에서 차량 좌표계로 변환 (각도 반전)
         target_angle = -target_angle
         target_distance = float(min(reverse_ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
