@@ -183,16 +183,13 @@ class LidarAvoidancePlanner:
             rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Attempting to avoid by turning left/right.")
 
         # 장애물 포인트를 각도로 변환 (회피를 위해)
+        # 원본 좌표계를 사용하므로 각도도 원본 좌표계 기준
         obstacle_angles = None
         if len(obstacle_points) > 0:
             rospy.loginfo_throttle(1.0, "Detected %d obstacle points", len(obstacle_points))
-            # 장애물 포인트의 각도 계산 (라이다 좌표계 기준)
+            # 장애물 포인트의 각도 계산 (원본 라이다 좌표계 기준)
             obstacle_angles = np.arctan2(obstacle_points[:, 1], obstacle_points[:, 0])
-            # 라이다 좌표계 180도 회전 보정: 각도에서 π 빼기
-            obstacle_angles = obstacle_angles - math.pi
-            # 각도를 [-π, π] 범위로 정규화
-            obstacle_angles = np.where(obstacle_angles > math.pi, obstacle_angles - 2 * math.pi, obstacle_angles)
-            obstacle_angles = np.where(obstacle_angles < -math.pi, obstacle_angles + 2 * math.pi, obstacle_angles)
+            # 각도는 이미 원본 좌표계이므로 추가 변환 불필요
         else:
             rospy.logdebug_throttle(2.0, "No obstacle points detected")
 
@@ -279,20 +276,17 @@ class LidarAvoidancePlanner:
     def _collect_obstacle_points(
         self, ranges: np.ndarray, angles: np.ndarray, header=None
     ) -> Tuple[np.ndarray, float]:
-        # 1단계: 라이다 좌표계에서 카테시안 좌표로 변환
-        # 라이다 좌표계가 180도 회전되어 있다고 가정:
-        # - 라이다의 0도가 실제로는 후방을 가리킴
-        # - 따라서 각도에 π를 더하거나 좌표를 반전해야 함
-        # 좌표 변환: x = -r * cos(angle), y = -r * sin(angle)
-        # 이렇게 하면 라이다의 0도 방향이 실제 전방(x < 0)이 됨
+        # 1단계: 라이다 좌표계에서 카테시안 좌표로 변환 (RViz LaserScan과 동일한 좌표계)
+        # LaserScan 표준 좌표계: x = r * cos(angle), y = r * sin(angle)
+        # RViz에서 표시되는 좌표계와 동일하게 변환
         xy = np.zeros((len(ranges), 2), dtype=np.float32)
-        xy[:, 0] = -ranges * np.cos(angles)  # 전방이 음수 x
-        xy[:, 1] = -ranges * np.sin(angles)  # 좌측이 음수 y
+        xy[:, 0] = ranges * np.cos(angles)  # 원본 좌표계
+        xy[:, 1] = ranges * np.sin(angles)  # 원본 좌표계
         
-        # 2단계: 전방 포인트만 선택 (x < 0이 전방, 즉 라이다의 0도 방향)
-        # 하지만 실제로는 라이다의 각도 범위를 확인해야 함
-        # 일단 모든 포인트를 사용하되, 전방 FOV 내의 포인트만 장애물로 인식
-        # 전방 FOV는 이미 _prepare_scan에서 필터링되었으므로 여기서는 모든 포인트가 전방
+        # 2단계: 전방 포인트 필터링 (라이다가 180도 회전되어 있다면 전방이 음수 x)
+        # detect_obstacles.py 참고: x_forward = -x, y_lateral = y
+        # 전방 포인트: x < 0 (또는 라이다 설치 방향에 따라 다를 수 있음)
+        # 일단 모든 포인트를 사용 (전방 FOV는 이미 _prepare_scan에서 필터링됨)
         
         # 3단계: 전방의 모든 포인트를 장애물로 인식 (거리 제한 없음)
         # 벽 등 멀리 있는 장애물도 인식하기 위해 거리 제한 제거
