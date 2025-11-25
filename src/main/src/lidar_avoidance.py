@@ -38,7 +38,7 @@ class LidarAvoidancePlanner:
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.20)  # 차폭 반경 20cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 2.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.60)  # 60cm부터 장애물 인식
-        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.60)  # 60cm부터 속도 감소 시작
+        # 속도 제어는 main_run.py에서 담당하므로 제거
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 30.0))  # 전방 30도 이내 장애물 감지 각도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
@@ -51,10 +51,7 @@ class LidarAvoidancePlanner:
         self.publish_ackermann = rospy.get_param("~publish_ackermann", True)
         self.publish_direct_controls = rospy.get_param("~publish_direct_controls", True)
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.4)
-        self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)
-        self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
-        self.min_pwm = rospy.get_param("~min_pwm", 900.0)
+        # 속도 제어는 main_run.py에서 담당하므로 제거
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
         self.min_servo = rospy.get_param("~min_servo", 0.0)
@@ -111,9 +108,8 @@ class LidarAvoidancePlanner:
                 self.camera_info_callback,
                 queue_size=1,
             )
-        self.speed_pub = rospy.Publisher(
-            "/commands/motor/speed", Float64, queue_size=1
-        ) if self.publish_direct_controls else None
+        # 속도 제어는 main_run.py에서 담당하므로 제거
+        # 조향만 제어
         self.steering_pub = rospy.Publisher(
             "/commands/servo/position", Float64, queue_size=1
         ) if self.publish_direct_controls else None
@@ -134,12 +130,6 @@ class LidarAvoidancePlanner:
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
         
-        # 속도 스무딩 설정
-        self.current_speed = 0.0  # 현재 속도 (부드러운 전환용)
-        self.current_pwm = 0.0  # 현재 PWM (부드러운 전환용)
-        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 2.0)  # 속도 변화율 (m/s^2)
-        self.pwm_smoothing_rate = rospy.get_param("~pwm_smoothing_rate", 500.0)  # PWM 변화율 (per second)
-        
         rospy.loginfo(
             "LidarAvoidancePlanner ready. Subscribing to %s (hardware only, no simulation)", 
             self.scan_topic
@@ -158,6 +148,18 @@ class LidarAvoidancePlanner:
 
         closest = float(np.min(ranges))
         self.clearance_pub.publish(closest)
+        
+        # 30cm 이하일 때는 정지 (20cm에서 완전 정지)
+        hard_stop_distance = 0.20  # 20cm
+        speed_reduction_start = 0.30  # 30cm
+        if closest <= hard_stop_distance:
+            # 20cm 이하는 완전 정지
+            rospy.logwarn_throttle(1.0, "Obstacle too close (%.2fm <= %.2fm). Emergency stop.", closest, hard_stop_distance)
+            self._publish_stop(scan.header, reason="too_close")
+            return
+        elif closest < speed_reduction_start:
+            # 20cm ~ 30cm: 속도 감소 (main_run.py에서 처리), 조향은 회피 계속
+            rospy.logwarn_throttle(1.0, "Obstacle very close (%.2fm). Speed reduction active.", closest)
 
         # 카메라 퓨전 적용
         # obstacle_points: 회피 로직용 (60cm 이내만)
@@ -196,25 +198,32 @@ class LidarAvoidancePlanner:
         else:
             rospy.logdebug_throttle(2.0, "No obstacle points detected")
 
-        # 전방 장애물이 있어도 좌우로 회피 경로를 찾음
-        (
-            target_angle,
-            target_distance,
-            selected_score,
-        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
+        # 30cm 이상일 때만 장애물이 가장 적은 곳으로 회피 주행
+        speed_reduction_start = 0.30  # 30cm
+        if closest >= speed_reduction_start:
+            # 30cm 이상: 장애물이 가장 적은 곳으로 회피
+            (
+                target_angle,
+                target_distance,
+                selected_score,
+            ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
+            
+            if target_angle is None:
+                # 전방에 경로가 없을 때 정지
+                rospy.logwarn_throttle(1.0, "No feasible gap. Stopping vehicle.")
+                self._publish_stop(scan.header, reason="no_gap")
+                return
+        else:
+            # 30cm 미만: 속도 감소 중이므로 조향은 중앙 유지 (속도는 main_run.py에서 제어)
+            rospy.logwarn_throttle(1.0, "Obstacle too close (%.2fm < %.2fm). Maintaining center steering.", closest, speed_reduction_start)
+            target_angle = 0.0  # 중앙 유지
+            target_distance = 0.0
+            selected_score = 0.0
 
         # 전방 30도 이내 장애물이 없으면 회피 기동 계속
         emergency_stop = False
-        if target_angle is None:
-            # 전방에 경로가 없을 때 정지
-            rospy.logwarn_throttle(1.0, "No feasible gap. Stopping vehicle.")
-            self._publish_stop(scan.header, reason="no_gap")
-            return
 
-        # 거리 기반 속도 감소 적용 (60cm부터 점진적으로 감소, 30cm에서 정지)
-        drive_speed, pwm = self._compute_speed_profile(
-            target_distance, selected_score, emergency_stop, closest
-        )
+        # 조향각 계산 (속도는 main_run.py에서 제어)
         steering_angle = clamp(target_angle, -self.max_steering_angle, self.max_steering_angle)
         servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
@@ -224,8 +233,6 @@ class LidarAvoidancePlanner:
         self._publish_motion_commands(
             scan.header,
             steering_angle,
-            drive_speed,
-            pwm,
             servo_cmd,
             emergency_stop,
         )
@@ -677,92 +684,31 @@ class LidarAvoidancePlanner:
         
         return target_angle, target_distance, float(scores[idx])
 
-    def _compute_speed_profile(
-        self, lookahead: float, score: float, emergency_stop: bool, closest_distance: float
-    ) -> Tuple[float, float]:
-        if emergency_stop:
-            return 0.0, 0.0
-
-        # 거리 기반 속도 감소: 60cm부터 점진적으로 감소, 30cm에서 완전 정지
-        # 60cm 이상: 정상 속도
-        # 60cm ~ 30cm: 선형 감소
-        # 30cm 이하: 정지 (emergency_stop으로 이미 처리됨)
-        speed_reduction_factor = 1.0
-        if closest_distance < self.speed_reduction_start:
-            # 60cm ~ 30cm 구간에서 선형 감소
-            reduction_range = self.speed_reduction_start - self.hard_stop_distance  # 0.6 - 0.3 = 0.3m
-            if reduction_range > 0:
-                distance_in_range = closest_distance - self.hard_stop_distance
-                speed_reduction_factor = clamp(distance_in_range / reduction_range, 0.0, 1.0)
-        
-        score = clamp(score, 0.0, 1.0)
-        distance_ratio = clamp(lookahead / self.lookahead_distance, 0.0, 1.0)
-        blended = 0.5 * score + 0.5 * distance_ratio
-        
-        # 기본 속도 계산
-        base_drive_speed = (
-            self.min_drive_speed
-            + (self.max_drive_speed - self.min_drive_speed) * blended
-        )
-        base_pwm = self.min_pwm + (self.max_pwm - self.min_pwm) * blended
-        
-        # 거리 기반 속도 감소 적용
-        drive_speed = base_drive_speed * speed_reduction_factor
-        pwm = self.min_pwm + (base_pwm - self.min_pwm) * speed_reduction_factor
-        
-        return drive_speed, pwm
+    # 속도 제어는 main_run.py에서 담당하므로 제거됨
 
     def _publish_motion_commands(
         self,
         header,
         steering_angle: float,
-        drive_speed: float,
-        pwm: float,
         servo_cmd: float,
         emergency_stop: bool,
     ) -> None:
-        current_time = rospy.get_time()
-        dt = max(0.01, min(0.1, current_time - self.last_scan_time))  # 10ms ~ 100ms
-        
-        # 속도 결정 (전진만)
+        # 조향만 제어 (속도는 main_run.py에서 제어)
         if emergency_stop:
-            target_speed = 0.0
-            target_pwm = 0.0
-        else:
-            # 음수 속도는 허용하지 않음 (후진 제거)
-            target_speed = max(0.0, drive_speed)
-            target_pwm = max(0.0, pwm)
-        
-        # 점진적 속도 변화
-        max_speed_change = self.speed_smoothing_rate * dt
-        speed_diff = target_speed - self.current_speed
-        if abs(speed_diff) > max_speed_change:
-            self.current_speed += math.copysign(max_speed_change, speed_diff)
-        else:
-            self.current_speed = target_speed
-        
-        # 점진적 PWM 변화
-        max_pwm_change = self.pwm_smoothing_rate * dt
-        pwm_diff = target_pwm - self.current_pwm
-        if abs(pwm_diff) > max_pwm_change:
-            self.current_pwm += math.copysign(max_pwm_change, pwm_diff)
-        else:
-            self.current_pwm = target_pwm
+            # 비상 정지 시 조향각 중앙으로
+            servo_cmd = self.servo_center
         
         # 명령 발행
         if self.publish_ackermann and self.ackermann_pub is not None:
             ack_msg = AckermannDriveStamped()
             ack_msg.header = header
             ack_msg.drive.steering_angle = steering_angle
-            ack_msg.drive.speed = self.current_speed
+            ack_msg.drive.speed = 0.0  # 속도는 main_run.py에서 제어하므로 0으로 설정
             self.ackermann_pub.publish(ack_msg)
 
-        if self.publish_direct_controls and self.speed_pub and self.steering_pub:
-            speed_msg = Float64()
-            speed_msg.data = self.current_pwm
+        if self.publish_direct_controls and self.steering_pub:
             servo_msg = Float64()
-            servo_msg.data = servo_cmd if not emergency_stop else self.servo_center
-            self.speed_pub.publish(speed_msg)
+            servo_msg.data = servo_cmd
             self.steering_pub.publish(servo_msg)
 
     def _publish_obstacle_markers(self, header, all_points: np.ndarray, obstacle_points: np.ndarray) -> None:
@@ -857,18 +803,16 @@ class LidarAvoidancePlanner:
         self.path_pub.publish(path_msg)
 
     def _publish_stop(self, header, reason: str) -> None:
+        # 조향만 중앙으로 설정 (속도는 main_run.py에서 제어)
         if self.publish_ackermann and self.ackermann_pub is not None:
             msg = AckermannDriveStamped()
             msg.header = header
-            msg.drive.speed = 0.0
+            msg.drive.speed = 0.0  # 속도는 main_run.py에서 제어
             msg.drive.steering_angle = 0.0
             self.ackermann_pub.publish(msg)
-        if self.publish_direct_controls and self.speed_pub and self.steering_pub:
-            speed_msg = Float64()
-            speed_msg.data = 0.0
+        if self.publish_direct_controls and self.steering_pub:
             servo_msg = Float64()
             servo_msg.data = self.servo_center
-            self.speed_pub.publish(speed_msg)
             self.steering_pub.publish(servo_msg)
         rospy.logdebug_throttle(2.0, "Stop command issued (%s)", reason)
 

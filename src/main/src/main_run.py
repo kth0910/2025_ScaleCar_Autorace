@@ -189,18 +189,18 @@ class LaneFollower:
         # lidar_avoidance는 /ackermann_cmd를 발행하므로, 이를 확인하거나
         # 간단히 타임아웃 기반으로 처리 (lidar_avoidance가 활성화되어 있으면 주기적으로 제어)
         current_time = rospy.get_time()
+        is_lidar_controlling = (current_time - self.last_lidar_servo_time < self.lidar_timeout)
         
-        # 자신이 방금 발행한 메시지가 아닌 경우에만 라이다 제어로 간주
-        # (자신이 발행한 메시지는 무시)
-        if current_time - self.last_servo_publish_time > 0.1:  # 0.1초 이내에 발행하지 않았으면
-            if current_time - self.last_lidar_servo_time < self.lidar_timeout:
-                # 라이다가 최근에 제어 명령을 발행했으면 카메라 제어 발행하지 않음
-                return
-
-        # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
-        self.last_servo_publish_time = current_time
-        self.speed_pub.publish(Float64(self.speed_value))
-        self.steering_pub.publish(Float64(smoothed_servo))
+        # 속도는 항상 main_run.py에서 제어 (라이다 제어 중이어도)
+        # 라이다가 제어 중일 때는 조향만 라이다가 제어하고, 속도는 main_run.py가 제어
+        target_speed_pwm = self._compute_speed_with_obstacle()
+        self.speed_pub.publish(Float64(target_speed_pwm))
+        
+        # 조향은 라이다가 제어 중이면 발행하지 않음
+        if not is_lidar_controlling:
+            # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
+            self.last_servo_publish_time = current_time
+            self.steering_pub.publish(Float64(smoothed_servo))
 
         if self.enable_viz:
             cv2.imshow("Lane Frame", frame)
@@ -328,6 +328,52 @@ class LaneFollower:
         """라이다가 ackermann 명령을 발행하면 호출됨 (라이다 제어 중임을 표시)"""
         self.last_lidar_servo_time = rospy.get_time()
         self.lidar_controlling = True
+    
+    def _obstacle_distance_callback(self, msg):
+        """라이다에서 가장 가까운 장애물 거리 수신"""
+        self.closest_obstacle = msg.data
+        self.last_obstacle_time = rospy.get_time()
+
+    def _compute_speed_with_obstacle(self) -> float:
+        """장애물 거리에 따라 속도 계산"""
+        current_time = rospy.get_time()
+        dt = max(0.01, min(0.1, current_time - self.prev_time))
+        
+        # 기본 속도 (PWM)
+        base_pwm = self.speed_value
+        
+        # 장애물이 감지되면 속도 감소
+        if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
+            closest = self.closest_obstacle
+            
+            # 거리 기반 속도 감소: 30cm부터 점진적으로 감소, 20cm에서 완전 정지
+            speed_reduction_factor = 1.0
+            if closest < self.speed_reduction_start:
+                # 30cm ~ 20cm 구간에서 선형 감소
+                reduction_range = self.speed_reduction_start - self.hard_stop_distance  # 0.3 - 0.2 = 0.1m
+                if reduction_range > 0:
+                    distance_in_range = closest - self.hard_stop_distance
+                    speed_reduction_factor = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
+            elif closest <= self.hard_stop_distance:
+                # 20cm 이하는 완전 정지
+                speed_reduction_factor = 0.0
+            
+            # 속도 계산 (PWM)
+            speed_range = self.max_pwm - self.min_pwm
+            target_pwm = self.min_pwm + speed_range * speed_reduction_factor
+        else:
+            # 장애물이 없으면 기본 속도
+            target_pwm = base_pwm
+        
+        # 점진적 속도 변화
+        max_pwm_change = self.speed_smoothing_rate * dt
+        pwm_diff = target_pwm - self.current_speed_pwm
+        if abs(pwm_diff) > max_pwm_change:
+            self.current_speed_pwm += math.copysign(max_pwm_change, pwm_diff)
+        else:
+            self.current_speed_pwm = target_pwm
+        
+        return self.current_speed_pwm
 
     @staticmethod
     def _nothing(_):
