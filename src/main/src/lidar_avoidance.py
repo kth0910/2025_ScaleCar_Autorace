@@ -44,7 +44,7 @@ class LidarAvoidancePlanner:
         self.publish_ackermann = rospy.get_param("~publish_ackermann", True)
         self.publish_direct_controls = rospy.get_param("~publish_direct_controls", True)
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 1.5)
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 1.0)
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.6)
         self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
         self.min_pwm = rospy.get_param("~min_pwm", 900.0)
