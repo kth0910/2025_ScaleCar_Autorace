@@ -55,11 +55,6 @@ class LidarAvoidancePlanner:
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.3)
         self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
         self.min_pwm = rospy.get_param("~min_pwm", 900.0)
-        # 후진 회피 설정
-        self.enable_reverse_escape = rospy.get_param("~enable_reverse_escape", True)
-        self.reverse_speed = rospy.get_param("~reverse_speed", -0.4)  # 후진 속도 (음수)
-        self.reverse_pwm = rospy.get_param("~reverse_pwm", -800.0)  # 후진 PWM (음수)
-        self.reverse_fov = math.radians(rospy.get_param("~reverse_fov_deg", 120.0))  # 후방 FOV
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
         self.min_servo = rospy.get_param("~min_servo", 0.0)
@@ -139,12 +134,7 @@ class LidarAvoidancePlanner:
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
         
-        # 상태 머신: 부드러운 전진/후진 전환을 위해
-        self.drive_state = "FORWARD"  # FORWARD, REVERSE, STOP, TRANSITION
-        self.last_state_change_time = rospy.get_time()
-        self.state_transition_duration = rospy.get_param("~state_transition_duration", 0.5)  # 상태 전환 시간 (초)
-        self.reverse_min_duration = rospy.get_param("~reverse_min_duration", 1.0)  # 후진 최소 지속 시간
-        self.forward_min_duration = rospy.get_param("~forward_min_duration", 0.5)  # 전진 최소 지속 시간
+        # 속도 스무딩 설정
         self.current_speed = 0.0  # 현재 속도 (부드러운 전환용)
         self.current_pwm = 0.0  # 현재 PWM (부드러운 전환용)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 2.0)  # 속도 변화율 (m/s^2)
@@ -187,69 +177,23 @@ class LidarAvoidancePlanner:
         
         self._publish_obstacle_markers(scan.header, obstacle_points)
 
-        # 전방 30도 이내 장애물 감지 확인
+        # 전방 30도 이내 장애물 감지 확인 (경고만, 정지하지 않음)
         front_obstacle_detected = self._check_front_obstacle(ranges, angles)
-        
         if front_obstacle_detected:
-            # 전방 30도 이내 장애물 감지 시 멈추고 후진 기동
-            rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Stopping and reversing.")
-            reverse_angle, reverse_distance, reverse_score = self._select_reverse_target(ranges, angles)
-            if reverse_angle is not None:
-                rospy.logwarn("REVERSING: angle=%.2f deg, distance=%.2f m, speed=%.2f m/s, pwm=%.0f", 
-                            math.degrees(reverse_angle), reverse_distance, self.reverse_speed, self.reverse_pwm)
-                steering_angle = clamp(reverse_angle, -self.max_steering_angle, self.max_steering_angle)
-                servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
-                servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
-                
-                self._publish_path(scan.header, steering_angle, reverse_distance)
-                self._publish_target_marker(scan.header, steering_angle, reverse_distance, is_reverse=True)
-                self._publish_motion_commands(
-                    scan.header,
-                    steering_angle,
-                    self.reverse_speed,
-                    self.reverse_pwm,
-                    servo_cmd,
-                    False,  # 후진 중에는 emergency_stop 아님
-                )
-                return
-            else:
-                # 후진 경로도 없으면 정지
-                rospy.logwarn_throttle(1.0, "No reverse path found. Stopping.")
-                self._publish_stop(scan.header, reason="front_obstacle_no_reverse")
-                return
+            rospy.logwarn_throttle(1.0, "Obstacle detected in front 30deg. Attempting to avoid by turning left/right.")
 
+        # 전방 장애물이 있어도 좌우로 회피 경로를 찾음
         (
             target_angle,
             target_distance,
             selected_score,
-        ) = self._select_target(ranges, angles)
+        ) = self._select_target(ranges, angles, front_obstacle_detected)
 
-        # 전방 30도 이내 장애물이 없으면 회피 기동 계속 (멈추지 않음)
-        emergency_stop = False  # 전방 30도 이내 장애물이 없으면 정지하지 않음
+        # 전방 30도 이내 장애물이 없으면 회피 기동 계속
+        emergency_stop = False
         if target_angle is None:
-            # 전방에 경로가 없을 때 후진 회피 시도
-            if self.enable_reverse_escape:
-                reverse_angle, reverse_distance, reverse_score = self._select_reverse_target(ranges, angles)
-                if reverse_angle is not None:
-                    rospy.logwarn_throttle(1.0, "No forward path. Reversing to escape. Angle: %.2f deg", 
-                                         math.degrees(reverse_angle))
-                    steering_angle = clamp(reverse_angle, -self.max_steering_angle, self.max_steering_angle)
-                    servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
-                    servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
-                    
-                    self._publish_path(scan.header, steering_angle, reverse_distance)
-                    self._publish_target_marker(scan.header, steering_angle, reverse_distance, is_reverse=True)
-                    self._publish_motion_commands(
-                        scan.header,
-                        steering_angle,
-                        self.reverse_speed,
-                        self.reverse_pwm,
-                        servo_cmd,
-                        False,  # 후진 중에는 emergency_stop 아님
-                    )
-                    return
-            
-            rospy.logwarn_throttle(1.0, "No feasible gap (forward or reverse). Stopping vehicle.")
+            # 전방에 경로가 없을 때 정지
+            rospy.logwarn_throttle(1.0, "No feasible gap. Stopping vehicle.")
             self._publish_stop(scan.header, reason="no_gap")
             return
 
@@ -262,7 +206,7 @@ class LidarAvoidancePlanner:
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
 
         self._publish_path(scan.header, steering_angle, target_distance)
-        self._publish_target_marker(scan.header, steering_angle, target_distance, is_reverse=False)
+        self._publish_target_marker(scan.header, steering_angle, target_distance)
         self._publish_motion_commands(
             scan.header,
             steering_angle,
@@ -282,24 +226,14 @@ class LidarAvoidancePlanner:
         if not ranges.size:
             return None
 
-        # 전방 FOV + 후방 FOV 모두 포함 (후진 회피를 위해)
+        # 전방 FOV만 포함
         fov_half = self.forward_fov * 0.5
-        reverse_fov_half = self.reverse_fov * 0.5
         # 전방 FOV: |angle| <= forward_fov/2
         forward_mask = np.abs(angles) <= fov_half
         
-        # 후방 FOV: |angle| > 90도 && |angle - 180도| <= reverse_fov/2
-        reverse_base_mask = np.abs(angles) > math.pi / 2.0
-        reverse_mask = np.zeros_like(reverse_base_mask, dtype=bool)
-        if np.any(reverse_base_mask):
-            # 후방 각도를 180도 기준으로 정규화
-            normalized_reverse = np.abs(np.abs(angles[reverse_base_mask]) - math.pi)
-            reverse_mask[reverse_base_mask] = normalized_reverse <= reverse_fov_half
-        
-        # 전방 또는 후방 FOV 내 포인트만 선택
-        within_fov = forward_mask | reverse_mask
-        ranges = ranges[within_fov]
-        angles = angles[within_fov]
+        # 전방 FOV 내 포인트만 선택
+        ranges = ranges[forward_mask]
+        angles = angles[forward_mask]
         if not ranges.size:
             return None
 
@@ -587,7 +521,7 @@ class LidarAvoidancePlanner:
             return np.zeros((0, 2), dtype=np.float32), 0.0
 
     def _select_target(
-        self, ranges: np.ndarray, angles: np.ndarray
+        self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False
     ) -> Tuple[Optional[float], float, float]:
         clearance = np.clip(ranges - self.inflation_margin, 0.0, self.max_range)
         safe_mask = clearance > self.safe_distance
@@ -595,11 +529,21 @@ class LidarAvoidancePlanner:
             return None, 0.0, 0.0
 
         norm_clearance = clearance / self.max_range
+        
+        # 전방 장애물이 감지되면 좌우 회피를 더 선호하도록 가중치 조정
+        if front_obstacle_detected:
+            # 좌우 회피를 위해 clearance_weight를 높이고 heading_weight를 낮춤
+            effective_clearance_weight = 0.8  # 장애물 회피 우선
+            effective_heading_weight = 0.2   # 방향 선호도 감소
+        else:
+            effective_clearance_weight = self.clearance_weight
+            effective_heading_weight = self.heading_weight
+        
         heading_pref = 1.0 - (np.abs(angles) / (self.forward_fov * 0.5))
         heading_pref = np.clip(heading_pref, 0.0, 1.0)
         scores = (
-            self.clearance_weight * norm_clearance
-            + self.heading_weight * heading_pref
+            effective_clearance_weight * norm_clearance
+            + effective_heading_weight * heading_pref
         )
         scores[~safe_mask] = -np.inf
         idx = int(np.argmax(scores))
@@ -615,68 +559,6 @@ class LidarAvoidancePlanner:
         elif target_angle < -math.pi:
             target_angle += 2 * math.pi
         target_distance = float(min(ranges[idx], self.lookahead_distance))
-        return target_angle, target_distance, float(scores[idx])
-
-    def _select_reverse_target(
-        self, ranges: np.ndarray, angles: np.ndarray
-    ) -> Tuple[Optional[float], float, float]:
-        """
-        후방 방향에서 안전한 경로를 찾습니다.
-        후방은 각도가 ±90도 ~ ±180도 범위입니다.
-        """
-        # 후방 각도 범위: 90도 ~ 180도, -90도 ~ -180도
-        reverse_mask = np.abs(angles) > math.pi / 2.0  # |angle| > 90도
-        if not np.any(reverse_mask):
-            rospy.logdebug_throttle(2.0, "No reverse angles found (|angle| > 90deg)")
-            return None, 0.0, 0.0
-        
-        reverse_ranges = ranges[reverse_mask]
-        reverse_angles = angles[reverse_mask]
-        
-        # 후방 FOV 제한 (예: ±60도 범위)
-        reverse_fov_half = self.reverse_fov * 0.5
-        # 후방 중심은 180도 또는 -180도
-        # 각도를 180도 기준으로 정규화 (0~90도 범위)
-        normalized_angles = np.abs(np.abs(reverse_angles) - math.pi)
-        within_reverse_fov = normalized_angles <= reverse_fov_half
-        
-        if not np.any(within_reverse_fov):
-            return None, 0.0, 0.0
-        
-        reverse_ranges = reverse_ranges[within_reverse_fov]
-        reverse_angles = reverse_angles[within_reverse_fov]
-        normalized_angles = normalized_angles[within_reverse_fov]
-        
-        clearance = np.clip(reverse_ranges - self.inflation_margin, 0.0, self.max_range)
-        safe_mask = clearance > self.safe_distance
-        
-        if not np.any(safe_mask):
-            return None, 0.0, 0.0
-        
-        norm_clearance = clearance / self.max_range
-        # 후방에서는 중앙(180도)을 선호
-        center_pref = 1.0 - (normalized_angles / reverse_fov_half)
-        center_pref = np.clip(center_pref, 0.0, 1.0)
-        
-        scores = (
-            self.clearance_weight * norm_clearance
-            + self.heading_weight * center_pref
-        )
-        scores[~safe_mask] = -np.inf
-        
-        idx = int(np.argmax(scores))
-        if not np.isfinite(scores[idx]):
-            return None, 0.0, 0.0
-        
-        target_angle = float(reverse_angles[idx])
-        # 라이다 좌표계 180도 회전: 각도에 π 더하기
-        target_angle = target_angle + math.pi
-        # 각도를 [-π, π] 범위로 정규화
-        if target_angle > math.pi:
-            target_angle -= 2 * math.pi
-        elif target_angle < -math.pi:
-            target_angle += 2 * math.pi
-        target_distance = float(min(reverse_ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
     def _compute_speed_profile(
@@ -726,49 +608,14 @@ class LidarAvoidancePlanner:
         current_time = rospy.get_time()
         dt = max(0.01, min(0.1, current_time - self.last_scan_time))  # 10ms ~ 100ms
         
-        # 상태 결정
-        target_state = "STOP" if emergency_stop else ("REVERSE" if drive_speed < 0 else "FORWARD")
-        
-        # 상태 전환 조건 확인
-        time_since_state_change = current_time - self.last_state_change_time
-        
-        # 상태 전환 제약
-        if self.drive_state == "REVERSE" and target_state == "FORWARD":
-            # 후진 → 전진: 최소 후진 시간 경과 후, 전환 시간 동안 0으로
-            if time_since_state_change < self.reverse_min_duration:
-                target_state = "REVERSE"  # 아직 후진 유지
-            elif time_since_state_change < self.reverse_min_duration + self.state_transition_duration:
-                target_state = "TRANSITION"  # 전환 중
-        elif self.drive_state == "FORWARD" and target_state == "REVERSE":
-            # 전진 → 후진: 최소 전진 시간 경과 후, 전환 시간 동안 0으로
-            if time_since_state_change < self.forward_min_duration:
-                target_state = "FORWARD"  # 아직 전진 유지
-            elif time_since_state_change < self.forward_min_duration + self.state_transition_duration:
-                target_state = "TRANSITION"  # 전환 중
-        
-        # 상태 변경 감지
-        if target_state != self.drive_state:
-            self.last_state_change_time = current_time
-            self.drive_state = target_state
-        
-        # 부드러운 속도 전환
-        if target_state == "TRANSITION":
-            # 전환 중: 0으로 점진적 감소
-            target_speed = 0.0
-            target_pwm = 0.0
-        elif target_state == "STOP":
+        # 속도 결정 (전진만)
+        if emergency_stop:
             target_speed = 0.0
             target_pwm = 0.0
         else:
-            target_speed = drive_speed
-            target_pwm = pwm
-        
-        # 속도 스무딩 (항상 0을 거쳐서 전환)
-        if (self.current_speed > 0 and target_speed < 0) or (self.current_speed < 0 and target_speed > 0):
-            # 부호가 바뀌면 먼저 0으로
-            if abs(self.current_speed) > 0.01:
-                target_speed = 0.0
-                target_pwm = 0.0
+            # 음수 속도는 허용하지 않음 (후진 제거)
+            target_speed = max(0.0, drive_speed)
+            target_pwm = max(0.0, pwm)
         
         # 점진적 속도 변화
         max_speed_change = self.speed_smoothing_rate * dt
@@ -828,7 +675,7 @@ class LidarAvoidancePlanner:
         self.marker_pub.publish(marker_array)
 
     def _publish_target_marker(
-        self, header, steering_angle: float, distance: float, is_reverse: bool = False
+        self, header, steering_angle: float, distance: float
     ) -> None:
         marker = Marker()
         marker.header = header
@@ -843,17 +690,10 @@ class LidarAvoidancePlanner:
         # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
         display_angle = -steering_angle * self.arrow_angle_scale
         
-        # is_reverse 파라미터로 후진 여부 확인 (함수 호출 시 전달받은 값 사용)
-        if is_reverse:
-            # 후진 시 빨간색으로 표시
-            marker.color.r = 1.0
-            marker.color.g = 0.1
-            marker.color.b = 0.1
-        else:
-            # 전진 시 파란색으로 표시
-            marker.color.r = 0.1
-            marker.color.g = 0.8
-            marker.color.b = 1.0
+        # 전진 시 파란색으로 표시
+        marker.color.r = 0.1
+        marker.color.g = 0.8
+        marker.color.b = 1.0
         
         marker.pose.orientation.z = math.sin(display_angle * 0.5)
         marker.pose.orientation.w = math.cos(display_angle * 0.5)
