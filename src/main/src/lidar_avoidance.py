@@ -48,6 +48,11 @@ class LidarAvoidancePlanner:
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.3)
         self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
         self.min_pwm = rospy.get_param("~min_pwm", 900.0)
+        # 후진 회피 설정
+        self.enable_reverse_escape = rospy.get_param("~enable_reverse_escape", True)
+        self.reverse_speed = rospy.get_param("~reverse_speed", -0.4)  # 후진 속도 (음수)
+        self.reverse_pwm = rospy.get_param("~reverse_pwm", -800.0)  # 후진 PWM (음수)
+        self.reverse_fov = math.radians(rospy.get_param("~reverse_fov_deg", 120.0))  # 후방 FOV
         self.servo_center = rospy.get_param("~servo_center", 0.53)
         self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
@@ -116,7 +121,29 @@ class LidarAvoidancePlanner:
 
         emergency_stop = closest < self.hard_stop_distance
         if target_angle is None:
-            rospy.logwarn_throttle(1.0, "No feasible gap. Stopping vehicle.")
+            # 전방에 경로가 없을 때 후진 회피 시도
+            if self.enable_reverse_escape:
+                reverse_angle, reverse_distance, reverse_score = self._select_reverse_target(ranges, angles)
+                if reverse_angle is not None:
+                    rospy.logwarn_throttle(1.0, "No forward path. Reversing to escape. Angle: %.2f deg", 
+                                         math.degrees(reverse_angle))
+                    steering_angle = clamp(reverse_angle, -self.max_steering_angle, self.max_steering_angle)
+                    servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
+                    servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
+                    
+                    self._publish_path(scan.header, steering_angle, reverse_distance)
+                    self._publish_target_marker(scan.header, steering_angle, reverse_distance)
+                    self._publish_motion_commands(
+                        scan.header,
+                        steering_angle,
+                        self.reverse_speed,
+                        self.reverse_pwm,
+                        servo_cmd,
+                        False,  # 후진 중에는 emergency_stop 아님
+                    )
+                    return
+            
+            rospy.logwarn_throttle(1.0, "No feasible gap (forward or reverse). Stopping vehicle.")
             self._publish_stop(scan.header, reason="no_gap")
             return
 
@@ -199,6 +226,60 @@ class LidarAvoidancePlanner:
 
         target_angle = float(angles[idx])
         target_distance = float(min(ranges[idx], self.lookahead_distance))
+        return target_angle, target_distance, float(scores[idx])
+
+    def _select_reverse_target(
+        self, ranges: np.ndarray, angles: np.ndarray
+    ) -> Tuple[Optional[float], float, float]:
+        """
+        후방 방향에서 안전한 경로를 찾습니다.
+        후방은 각도가 ±90도 ~ ±180도 범위입니다.
+        """
+        # 후방 각도 범위: 90도 ~ 180도, -90도 ~ -180도
+        reverse_mask = np.abs(angles) > math.pi / 2.0  # |angle| > 90도
+        if not np.any(reverse_mask):
+            return None, 0.0, 0.0
+        
+        reverse_ranges = ranges[reverse_mask]
+        reverse_angles = angles[reverse_mask]
+        
+        # 후방 FOV 제한 (예: ±60도 범위)
+        reverse_fov_half = self.reverse_fov * 0.5
+        # 후방 중심은 180도 또는 -180도
+        # 각도를 180도 기준으로 정규화 (0~90도 범위)
+        normalized_angles = np.abs(np.abs(reverse_angles) - math.pi)
+        within_reverse_fov = normalized_angles <= reverse_fov_half
+        
+        if not np.any(within_reverse_fov):
+            return None, 0.0, 0.0
+        
+        reverse_ranges = reverse_ranges[within_reverse_fov]
+        reverse_angles = reverse_angles[within_reverse_fov]
+        normalized_angles = normalized_angles[within_reverse_fov]
+        
+        clearance = np.clip(reverse_ranges - self.inflation_margin, 0.0, self.max_range)
+        safe_mask = clearance > self.safe_distance
+        
+        if not np.any(safe_mask):
+            return None, 0.0, 0.0
+        
+        norm_clearance = clearance / self.max_range
+        # 후방에서는 중앙(180도)을 선호
+        center_pref = 1.0 - (normalized_angles / reverse_fov_half)
+        center_pref = np.clip(center_pref, 0.0, 1.0)
+        
+        scores = (
+            self.clearance_weight * norm_clearance
+            + self.heading_weight * center_pref
+        )
+        scores[~safe_mask] = -np.inf
+        
+        idx = int(np.argmax(scores))
+        if not np.isfinite(scores[idx]):
+            return None, 0.0, 0.0
+        
+        target_angle = float(reverse_angles[idx])
+        target_distance = float(min(reverse_ranges[idx], self.lookahead_distance))
         return target_angle, target_distance, float(scores[idx])
 
     def _compute_speed_profile(
