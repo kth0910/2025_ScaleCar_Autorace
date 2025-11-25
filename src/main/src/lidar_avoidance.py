@@ -139,6 +139,17 @@ class LidarAvoidancePlanner:
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
         
+        # 상태 머신: 부드러운 전진/후진 전환을 위해
+        self.drive_state = "FORWARD"  # FORWARD, REVERSE, STOP, TRANSITION
+        self.last_state_change_time = rospy.get_time()
+        self.state_transition_duration = rospy.get_param("~state_transition_duration", 0.5)  # 상태 전환 시간 (초)
+        self.reverse_min_duration = rospy.get_param("~reverse_min_duration", 1.0)  # 후진 최소 지속 시간
+        self.forward_min_duration = rospy.get_param("~forward_min_duration", 0.5)  # 전진 최소 지속 시간
+        self.current_speed = 0.0  # 현재 속도 (부드러운 전환용)
+        self.current_pwm = 0.0  # 현재 PWM (부드러운 전환용)
+        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 2.0)  # 속도 변화율 (m/s^2)
+        self.pwm_smoothing_rate = rospy.get_param("~pwm_smoothing_rate", 500.0)  # PWM 변화율 (per second)
+        
         rospy.loginfo(
             "LidarAvoidancePlanner ready. Subscribing to %s (hardware only, no simulation)", 
             self.scan_topic
@@ -712,16 +723,80 @@ class LidarAvoidancePlanner:
         servo_cmd: float,
         emergency_stop: bool,
     ) -> None:
+        current_time = rospy.get_time()
+        dt = max(0.01, min(0.1, current_time - self.last_scan_time))  # 10ms ~ 100ms
+        
+        # 상태 결정
+        target_state = "STOP" if emergency_stop else ("REVERSE" if drive_speed < 0 else "FORWARD")
+        
+        # 상태 전환 조건 확인
+        time_since_state_change = current_time - self.last_state_change_time
+        
+        # 상태 전환 제약
+        if self.drive_state == "REVERSE" and target_state == "FORWARD":
+            # 후진 → 전진: 최소 후진 시간 경과 후, 전환 시간 동안 0으로
+            if time_since_state_change < self.reverse_min_duration:
+                target_state = "REVERSE"  # 아직 후진 유지
+            elif time_since_state_change < self.reverse_min_duration + self.state_transition_duration:
+                target_state = "TRANSITION"  # 전환 중
+        elif self.drive_state == "FORWARD" and target_state == "REVERSE":
+            # 전진 → 후진: 최소 전진 시간 경과 후, 전환 시간 동안 0으로
+            if time_since_state_change < self.forward_min_duration:
+                target_state = "FORWARD"  # 아직 전진 유지
+            elif time_since_state_change < self.forward_min_duration + self.state_transition_duration:
+                target_state = "TRANSITION"  # 전환 중
+        
+        # 상태 변경 감지
+        if target_state != self.drive_state:
+            self.last_state_change_time = current_time
+            self.drive_state = target_state
+        
+        # 부드러운 속도 전환
+        if target_state == "TRANSITION":
+            # 전환 중: 0으로 점진적 감소
+            target_speed = 0.0
+            target_pwm = 0.0
+        elif target_state == "STOP":
+            target_speed = 0.0
+            target_pwm = 0.0
+        else:
+            target_speed = drive_speed
+            target_pwm = pwm
+        
+        # 속도 스무딩 (항상 0을 거쳐서 전환)
+        if (self.current_speed > 0 and target_speed < 0) or (self.current_speed < 0 and target_speed > 0):
+            # 부호가 바뀌면 먼저 0으로
+            if abs(self.current_speed) > 0.01:
+                target_speed = 0.0
+                target_pwm = 0.0
+        
+        # 점진적 속도 변화
+        max_speed_change = self.speed_smoothing_rate * dt
+        speed_diff = target_speed - self.current_speed
+        if abs(speed_diff) > max_speed_change:
+            self.current_speed += math.copysign(max_speed_change, speed_diff)
+        else:
+            self.current_speed = target_speed
+        
+        # 점진적 PWM 변화
+        max_pwm_change = self.pwm_smoothing_rate * dt
+        pwm_diff = target_pwm - self.current_pwm
+        if abs(pwm_diff) > max_pwm_change:
+            self.current_pwm += math.copysign(max_pwm_change, pwm_diff)
+        else:
+            self.current_pwm = target_pwm
+        
+        # 명령 발행
         if self.publish_ackermann and self.ackermann_pub is not None:
             ack_msg = AckermannDriveStamped()
             ack_msg.header = header
             ack_msg.drive.steering_angle = steering_angle
-            ack_msg.drive.speed = 0.0 if emergency_stop else drive_speed
+            ack_msg.drive.speed = self.current_speed
             self.ackermann_pub.publish(ack_msg)
 
         if self.publish_direct_controls and self.speed_pub and self.steering_pub:
             speed_msg = Float64()
-            speed_msg.data = 0.0 if emergency_stop else pwm
+            speed_msg.data = self.current_pwm
             servo_msg = Float64()
             servo_msg.data = servo_cmd if not emergency_stop else self.servo_center
             self.speed_pub.publish(speed_msg)
