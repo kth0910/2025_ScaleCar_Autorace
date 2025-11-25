@@ -288,28 +288,19 @@ class LidarAvoidancePlanner:
         # 전방 포인트: x < 0 (또는 라이다 설치 방향에 따라 다를 수 있음)
         # 일단 모든 포인트를 사용 (전방 FOV는 이미 _prepare_scan에서 필터링됨)
         
-        # 3단계: 전방의 모든 포인트를 장애물로 인식 (거리 제한 없음)
-        # 벽 등 멀리 있는 장애물도 인식하기 위해 거리 제한 제거
-        obstacle_points = xy  # 모든 포인트를 장애물로 인식
+        # 3단계: 전방 60cm 이내 장애물만 인식
+        distances = np.linalg.norm(xy, axis=1)
+        close_mask = distances < self.obstacle_threshold  # 60cm 이내만 장애물로 인식
+        obstacle_points = xy[close_mask]
         front_count = len(obstacle_points)
         
         if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found")
+            rospy.logdebug_throttle(2.0, "No obstacle points found within %.2fm", self.obstacle_threshold)
             return np.zeros((0, 2), dtype=np.float32), 0.0
         
-        # 4단계: 가까운 장애물 우선 인식 (선택적 필터링)
-        # 가까운 장애물이 있으면 그것을 우선하되, 멀리 있는 장애물도 포함
-        distances = np.linalg.norm(obstacle_points, axis=1)
-        min_dist = float(np.min(distances))
-        
-        # 가까운 장애물이 있으면 로그 출력
-        if min_dist < self.obstacle_threshold:
-            close_count = np.sum(distances < self.obstacle_threshold)
-            rospy.logdebug_throttle(2.0, "Found %d close obstacles (< %.2fm) out of %d total points, min_dist=%.2fm", 
-                                    close_count, self.obstacle_threshold, front_count, min_dist)
-        else:
-            rospy.logdebug_throttle(2.0, "No close obstacles, but %d front points detected as obstacles, min_dist=%.2fm", 
-                                    front_count, min_dist)
+        min_dist = float(np.min(distances[close_mask]))
+        rospy.logdebug_throttle(2.0, "Found %d obstacles within %.2fm, min_dist=%.2fm", 
+                                front_count, self.obstacle_threshold, min_dist)
         
         # 4단계: 클러스터링으로 노이즈 제거 (선택적)
         # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
@@ -583,47 +574,50 @@ class LidarAvoidancePlanner:
 
         norm_clearance = clearance / self.max_range
         
-        # 전방 장애물이 감지되면 좌우 회피를 더 선호하도록 가중치 조정
+        # 각 방향의 장애물 밀도 계산 (장애물이 가장 적은 방향 선택)
+        obstacle_density = np.zeros_like(angles, dtype=np.float32)
+        if obstacle_angles is not None and len(obstacle_angles) > 0:
+            # 각 경로 각도에 대해 주변 장애물 개수 계산
+            angle_window = math.radians(15.0)  # 각 방향에서 ±15도 범위의 장애물 개수 계산
+            
+            for i, angle in enumerate(angles):
+                # 각도 차이 계산
+                angle_diffs = np.abs(obstacle_angles - angle)
+                # 각도 차이를 [-π, π] 범위로 정규화
+                angle_diffs = np.minimum(angle_diffs, 2 * math.pi - angle_diffs)
+                # 주변 각도 범위 내 장애물 개수
+                nearby_obstacles = np.sum(angle_diffs < angle_window)
+                # 장애물 밀도: 장애물이 많을수록 값이 큼 (0~1 정규화)
+                # 최대 장애물 개수를 10개로 가정하고 정규화
+                obstacle_density[i] = min(1.0, nearby_obstacles / 10.0)
+        else:
+            # 장애물이 없으면 모든 방향의 밀도가 0
+            obstacle_density[:] = 0.0
+        
+        # 장애물이 가장 적은 방향을 선호 (밀도가 낮을수록 점수 높음)
+        # obstacle_density를 역으로 변환: 밀도가 낮을수록 높은 점수
+        obstacle_avoidance_score = 1.0 - obstacle_density  # 장애물이 적을수록 1에 가까움
+        
+        # 전방 장애물이 감지되면 장애물 회피를 최우선으로
         if front_obstacle_detected:
-            # 좌우 회피를 위해 clearance_weight를 높이고 heading_weight를 낮춤
-            effective_clearance_weight = 0.8  # 장애물 회피 우선
-            effective_heading_weight = 0.2   # 방향 선호도 감소
+            # 장애물 회피를 최우선으로 하되, 안전 거리도 고려
+            effective_clearance_weight = 0.3  # 안전 거리 가중치 감소
+            effective_heading_weight = 0.1   # 방향 선호도 감소
+            effective_obstacle_weight = 0.6  # 장애물 회피 가중치 증가
         else:
             effective_clearance_weight = self.clearance_weight
             effective_heading_weight = self.heading_weight
+            effective_obstacle_weight = 0.3  # 장애물 회피 가중치
         
         heading_pref = 1.0 - (np.abs(angles) / (self.forward_fov * 0.5))
         heading_pref = np.clip(heading_pref, 0.0, 1.0)
         
-        # 장애물 회피 페널티 계산
-        obstacle_penalty = np.ones_like(angles, dtype=np.float32)
-        if obstacle_angles is not None and len(obstacle_angles) > 0:
-            # 각 각도에 대해 가장 가까운 장애물까지의 각도 거리 계산
-            for i, angle in enumerate(angles):
-                # 각도 차이 계산 (최소 각도 차이)
-                angle_diffs = np.abs(obstacle_angles - angle)
-                # 각도 차이를 [-π, π] 범위로 정규화
-                angle_diffs = np.minimum(angle_diffs, 2 * math.pi - angle_diffs)
-                min_obstacle_angle_diff = float(np.min(angle_diffs))
-                
-                # 장애물로부터의 각도 거리에 따라 페널티 적용
-                # 30도 이내: 강한 페널티 (점수 크게 감소)
-                # 30도 ~ 60도: 중간 페널티
-                # 60도 이상: 페널티 없음
-                if min_obstacle_angle_diff < math.radians(30.0):
-                    # 30도 이내: 점수를 0.1로 감소
-                    obstacle_penalty[i] = 0.1
-                elif min_obstacle_angle_diff < math.radians(60.0):
-                    # 30도 ~ 60도: 점수를 0.3으로 감소
-                    obstacle_penalty[i] = 0.3
-                else:
-                    # 60도 이상: 페널티 없음
-                    obstacle_penalty[i] = 1.0
-        
+        # 점수 계산: 장애물이 적은 방향을 최우선으로 선택
         scores = (
             effective_clearance_weight * norm_clearance
             + effective_heading_weight * heading_pref
-        ) * obstacle_penalty  # 장애물 회피 페널티 적용
+            + effective_obstacle_weight * obstacle_avoidance_score  # 장애물이 적을수록 높은 점수
+        )
         
         scores[~safe_mask] = -np.inf
         idx = int(np.argmax(scores))
@@ -639,6 +633,12 @@ class LidarAvoidancePlanner:
         elif target_angle < -math.pi:
             target_angle += 2 * math.pi
         target_distance = float(min(ranges[idx], self.lookahead_distance))
+        
+        # 선택된 방향의 장애물 밀도 로그
+        selected_density = obstacle_density[idx]
+        rospy.logdebug_throttle(1.0, "Selected angle: %.1f deg, obstacle_density: %.2f, clearance: %.2f", 
+                               math.degrees(target_angle), selected_density, clearance[idx])
+        
         return target_angle, target_distance, float(scores[idx])
 
     def _compute_speed_profile(
