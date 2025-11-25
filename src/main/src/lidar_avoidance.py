@@ -51,8 +51,8 @@ class LidarAvoidancePlanner:
         self.publish_ackermann = rospy.get_param("~publish_ackermann", True)
         self.publish_direct_controls = rospy.get_param("~publish_direct_controls", True)
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.7)
-        self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.3)
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.4)
+        self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)
         self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
         self.min_pwm = rospy.get_param("~min_pwm", 900.0)
         self.servo_center = rospy.get_param("~servo_center", 0.53)
@@ -160,7 +160,9 @@ class LidarAvoidancePlanner:
         self.clearance_pub.publish(closest)
 
         # 카메라 퓨전 적용
-        obstacle_points, lidar_confidence = self._collect_obstacle_points(ranges, angles, scan.header)
+        # obstacle_points: 회피 로직용 (60cm 이내만)
+        # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일)
+        obstacle_points, all_points, lidar_confidence = self._collect_obstacle_points(ranges, angles, scan.header)
         camera_confidence = 0.0
         if self.enable_camera_fusion and self.camera_info_received and self.latest_image is not None:
             camera_obstacles, camera_confidence = self._detect_camera_obstacles(
@@ -175,7 +177,8 @@ class LidarAvoidancePlanner:
                     if len(camera_obstacles) > 0:
                         obstacle_points = np.vstack([obstacle_points, camera_obstacles]) if len(obstacle_points) > 0 else camera_obstacles
         
-        self._publish_obstacle_markers(scan.header, obstacle_points)
+        # 마커는 모든 포인트를 표시하되, 60cm 이내인 것만 빨간색으로 표시
+        self._publish_obstacle_markers(scan.header, all_points, obstacle_points)
 
         # 전방 30도 이내 장애물 감지 확인 (경고만, 정지하지 않음)
         front_obstacle_detected = self._check_front_obstacle(ranges, angles)
@@ -275,7 +278,7 @@ class LidarAvoidancePlanner:
 
     def _collect_obstacle_points(
         self, ranges: np.ndarray, angles: np.ndarray, header=None
-    ) -> Tuple[np.ndarray, float]:
+    ) -> Tuple[np.ndarray, np.ndarray, float]:
         # 1단계: 라이다 좌표계에서 카테시안 좌표로 변환 (RViz LaserScan과 동일한 좌표계)
         # LaserScan 표준 좌표계: x = r * cos(angle), y = r * sin(angle)
         # RViz에서 표시되는 좌표계와 동일하게 변환
@@ -288,7 +291,10 @@ class LidarAvoidancePlanner:
         # 전방 포인트: x < 0 (또는 라이다 설치 방향에 따라 다를 수 있음)
         # 일단 모든 포인트를 사용 (전방 FOV는 이미 _prepare_scan에서 필터링됨)
         
-        # 3단계: 전방 60cm 이내 장애물만 인식
+        # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
+        all_points = xy
+        
+        # 3단계: 전방 60cm 이내 장애물만 인식 (회피 로직용)
         distances = np.linalg.norm(xy, axis=1)
         close_mask = distances < self.obstacle_threshold  # 60cm 이내만 장애물로 인식
         obstacle_points = xy[close_mask]
@@ -296,7 +302,7 @@ class LidarAvoidancePlanner:
         
         if len(obstacle_points) == 0:
             rospy.logdebug_throttle(2.0, "No obstacle points found within %.2fm", self.obstacle_threshold)
-            return np.zeros((0, 2), dtype=np.float32), 0.0
+            return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[close_mask]))
         rospy.logdebug_throttle(2.0, "Found %d obstacles within %.2fm, min_dist=%.2fm", 
@@ -321,7 +327,7 @@ class LidarAvoidancePlanner:
         else:
             lidar_confidence = 0.0
         
-        return obstacle_points, lidar_confidence
+        return obstacle_points, all_points, lidar_confidence
     
     def _cluster_obstacle_points(self, points: np.ndarray) -> np.ndarray:
         """
@@ -729,29 +735,47 @@ class LidarAvoidancePlanner:
             self.speed_pub.publish(speed_msg)
             self.steering_pub.publish(servo_msg)
 
-    def _publish_obstacle_markers(self, header, points: np.ndarray) -> None:
-        marker = Marker()
-        marker.header = header
-        marker.ns = "lidar_obstacles"
-        marker.id = 0
-        marker.type = Marker.POINTS
-        marker.action = Marker.ADD
-        marker.scale.x = 0.08
-        marker.scale.y = 0.08
-        marker.color.r = 1.0
-        marker.color.g = 0.3
-        marker.color.b = 0.3
-        marker.color.a = 0.9
-        marker.lifetime = rospy.Duration(0.2)
-        marker.points = []
-        for x, y in points:
-            p = Point()
-            p.x = float(x)
-            p.y = float(y)
-            marker.points.append(p)
-
+    def _publish_obstacle_markers(self, header, all_points: np.ndarray, obstacle_points: np.ndarray) -> None:
+        """
+        모든 포인트를 표시하되, 60cm 이내인 것만 빨간색으로 표시.
+        all_points: LaserScan의 모든 포인트 (흰 마커와 동일한 위치)
+        obstacle_points: 60cm 이내 장애물 포인트 (빨간색으로 표시)
+        """
         marker_array = MarkerArray()
-        marker_array.markers.append(marker)
+        
+        # 60cm 이내 장애물만 빨간색으로 표시
+        if len(obstacle_points) > 0 and len(all_points) > 0:
+            # 모든 포인트의 거리 계산
+            all_distances = np.linalg.norm(all_points, axis=1)
+            close_mask = all_distances < self.obstacle_threshold  # 60cm 이내
+            
+            # 60cm 이내인 포인트만 빨간색 마커로 표시
+            red_marker = Marker()
+            red_marker.header = header
+            red_marker.ns = "lidar_obstacles"
+            red_marker.id = 0
+            red_marker.type = Marker.POINTS
+            red_marker.action = Marker.ADD
+            red_marker.scale.x = 0.08
+            red_marker.scale.y = 0.08
+            red_marker.color.r = 1.0
+            red_marker.color.g = 0.3
+            red_marker.color.b = 0.3
+            red_marker.color.a = 0.9
+            red_marker.lifetime = rospy.Duration(0.2)
+            red_marker.points = []
+            
+            # 60cm 이내인 포인트만 선택 (LaserScan과 동일한 위치)
+            close_points = all_points[close_mask]
+            for x, y in close_points:
+                p = Point()
+                p.x = float(x)
+                p.y = float(y)
+                red_marker.points.append(p)
+            
+            if len(red_marker.points) > 0:
+                marker_array.markers.append(red_marker)
+        
         self.marker_pub.publish(marker_array)
 
     def _publish_target_marker(
