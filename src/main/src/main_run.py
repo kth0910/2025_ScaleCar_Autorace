@@ -252,6 +252,14 @@ class LaneFollower:
                 self.crosswalk_state = "STOPPING"
                 self.crosswalk_stop_start_time = rospy.get_time()
                 rospy.loginfo("Stop line passed (disappeared). Stopping.")
+        
+        elif self.crosswalk_state == "DONE":
+            if self.enable_viz:
+                try:
+                    cv2.destroyWindow("Crosswalk Debug")
+                    cv2.destroyWindow("Stop Line Debug")
+                except Exception:
+                    pass
 
         lane_mask = self._create_lane_mask(frame)
         slide_img, center_x, has_lane = self._run_slidewindow(lane_mask)
