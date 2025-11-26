@@ -199,27 +199,28 @@ class LidarAvoidancePlanner:
         else:
             rospy.logdebug_throttle(2.0, "No obstacle points detected")
 
-        # 30cm 이상일 때만 장애물이 가장 적은 곳으로 회피 주행
-        speed_reduction_start = 0.30  # 30cm
-        if closest >= speed_reduction_start:
-            # 30cm 이상: 장애물이 가장 적은 곳으로 회피
-            (
-                target_angle,
-                target_distance,
-                selected_score,
-            ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
-            
-            if target_angle is None:
-                # 전방에 경로가 없을 때 정지
-                rospy.logwarn_throttle(1.0, "No feasible gap. Stopping vehicle.")
+        # 1m 이내일 때 장애물 회피 기동 수행
+        # (속도 감속은 main_run.py에서 수행하지만, 조향은 여기서 계산해야 함)
+        speed_reduction_start = 1.0  # 1m
+        
+        # 항상 장애물 회피 경로 계산 (거리에 상관없이 최적의 경로 찾기)
+        (
+            target_angle,
+            target_distance,
+            selected_score,
+        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
+        
+        if target_angle is None:
+            # 전방에 경로가 없을 때
+            if closest < speed_reduction_start:
+                # 너무 가까운데 경로도 없으면 정지 (조향은 유지)
+                rospy.logwarn_throttle(1.0, "No feasible gap and obstacle close. Stopping vehicle.")
                 self._publish_stop(scan.header, reason="no_gap")
-                return
-        else:
-            # 30cm 미만: 속도 감소 중이므로 조향은 중앙 유지 (속도는 main_run.py에서 제어)
-            rospy.logwarn_throttle(1.0, "Obstacle too close (%.2fm < %.2fm). Maintaining center steering.", closest, speed_reduction_start)
-            target_angle = 0.0  # 중앙 유지
-            target_distance = 0.0
-            selected_score = 0.0
+                # 조향은 이전 값 유지하거나 중앙으로? 일단 중앙으로
+                target_angle = 0.0
+            else:
+                # 멀리 있는데 경로가 없으면(다 막힘?) 일단 직진
+                target_angle = 0.0
 
         # 전방 30도 이내 장애물이 없으면 회피 기동 계속
         emergency_stop = False
