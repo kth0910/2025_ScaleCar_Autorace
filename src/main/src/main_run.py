@@ -202,11 +202,9 @@ class LaneFollower:
         
         use_lidar_steering = False
         
-        # 검정색(Black) 구간일 때만 라이다 회피 기동 우선
-        if self.current_detected_color == "black":
-            # 라이다 조향 명령이 최근(0.5초 이내)에 있었으면 라이다 우선
-            if (current_time - self.last_lidar_steering_time) < 0.5:
-                use_lidar_steering = True
+        # 장애물 감지 시(라이다 조향 명령 수신 시) 무조건 라이다 우선
+        if (current_time - self.last_lidar_steering_time) < 0.5:
+            use_lidar_steering = True
         
         if use_lidar_steering:
             self.last_servo_publish_time = current_time
