@@ -152,7 +152,7 @@ class LaneFollower:
         self.min_moving_pwm = rospy.get_param("~min_moving_pwm", 900.0)  # ERPM (최소 구동 토크)
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 1.0)  # 1m부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        speed_pwm_param = rospy.get_param("~speed", 2000.0)
+        speed_pwm_param = rospy.get_param("~speed", 1500.0)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 5000.0)  # PWM 변화율 (빠른 반응을 위해 대폭 상향)
         self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.8)  # 지수적 스무딩 계수 (반응성 향상)
 
