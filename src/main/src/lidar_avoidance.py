@@ -228,8 +228,8 @@ class LidarAvoidancePlanner:
         # 조향각 제한
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
-        # [중요] 조향 방향 수정: Left Turn이 Positive Angle -> 서보 값 증가 (main_run.py와 통일)
-        target_servo = self.servo_center + self.servo_per_rad * steering_angle
+        # [중요] 조향 방향 수정: 180도 회전으로 인한 좌우 반전을 보정하기 위해 부호 반전 (더하기 -> 빼기)
+        target_servo = self.servo_center - self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
         # 조향 관성 적용 (Low-Pass Filter)
@@ -649,8 +649,8 @@ class LidarAvoidancePlanner:
         marker.scale.y = 0.08
         marker.scale.z = 0.08
         marker.color.a = 0.9
-        # 화살표 방향 보정: 서보 각도보다 작게 스케일링
-        display_angle = steering_angle * self.arrow_angle_scale
+        # 화살표 방향 보정: 각도 반전
+        display_angle = -steering_angle * self.arrow_angle_scale
         
         # 전진 시 파란색으로 표시
         marker.color.r = 0.1
@@ -674,8 +674,8 @@ class LidarAvoidancePlanner:
             travel = distance * ratio
             pose = PoseStamped()
             pose.header = header
-            # 경로 방향 보정: 서보 각도보다 작게 스케일링
-            display_angle = steering_angle * self.arrow_angle_scale
+            # 경로 방향 보정: 각도 반전
+            display_angle = -steering_angle * self.arrow_angle_scale
             pose.pose.position.x = travel * math.cos(display_angle)
             pose.pose.position.y = travel * math.sin(display_angle)
             pose.pose.orientation.z = math.sin(display_angle * 0.5)
