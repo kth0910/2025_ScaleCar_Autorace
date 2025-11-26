@@ -163,9 +163,8 @@ class LaneFollower:
         )
         self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
         self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.6)
-        self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.25)
-        self.color_roi_width_ratio = rospy.get_param("~color_roi_width_ratio", 0.45)
-        self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.04)
+        self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 하단 20%만 사용
+        self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 검출 임계값 (2%로 낮춤)
         self.current_color_speed_mps = self._clamp(
             self.neutral_lane_speed, self.min_drive_speed, self.max_drive_speed
         )
@@ -507,37 +506,30 @@ class LaneFollower:
         return self.current_speed_pwm
 
     def _detect_bottom_lane_color(self, frame):
+        """하단 20% 영역에서 빨간색/파란색 검출"""
         if frame is None or frame.size == 0:
             return None
 
         h, w = frame.shape[:2]
-        roi_top = max(0, int((1.0 - self.color_roi_height_ratio) * h))
-        roi_bottom = h
-
-        lane_width_px = getattr(self.slidewindow, "lane_width_px", None)
-        if lane_width_px is None or lane_width_px <= 0:
-            roi_width = int(self.color_roi_width_ratio * w)
-        else:
-            roi_width = int(lane_width_px * 0.6)
-        roi_width = int(self._clamp(roi_width, 10, w))
-
-        center_x = self.current_center
-        if center_x is None or not math.isfinite(center_x):
-            center_x = w / 2.0
-        half_width = roi_width // 2
-        roi_left = int(np.clip(center_x - half_width, 0, w - roi_width))
-        roi_right = roi_left + roi_width
-        # 하단 차선 사이 ROI에서 색상 검출
+        # 하단 20%만 ROI로 사용
+        roi_top = int(0.8 * h)  # 상단 80%부터 시작
+        roi_bottom = h  # 하단까지
+        roi_left = 0  # 전체 너비 사용
+        roi_right = w
+        
+        # 하단 20% 전체 영역에서 색상 검출
         roi = frame[roi_top:roi_bottom, roi_left:roi_right]
         if roi.size == 0:
             return None
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        red_lower1 = np.array([0, 80, 80])
+        # 빨간색 검출 범위 (HSV에서 빨간색은 0도와 180도 근처에 있음)
+        red_lower1 = np.array([0, 50, 50])
         red_upper1 = np.array([10, 255, 255])
-        red_lower2 = np.array([160, 80, 80])
+        red_lower2 = np.array([170, 50, 50])
         red_upper2 = np.array([180, 255, 255])
-        blue_lower = np.array([90, 80, 80])
+        # 파란색 검출 범위
+        blue_lower = np.array([100, 50, 50])
         blue_upper = np.array([130, 255, 255])
 
         red_mask = cv2.inRange(hsv, red_lower1, red_upper1)
