@@ -31,15 +31,15 @@ class LaneFollower:
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         # 파라미터
-        self.desired_center = rospy.get_param("~desired_center", 300.0)
+        self.desired_center = rospy.get_param("~desired_center", 305.0)
         self.pid_kp = rospy.get_param("~steering_kp", -0.0065)
         self.pid_ki = rospy.get_param("~steering_ki", -0.0001)
         self.pid_kd = rospy.get_param("~steering_kd", -0.00200)
         self.steering_gain = self.pid_kp  # backward compatibility
         self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 중앙 정렬 (0.60 → 0.50)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
-        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 더 빠른 반응
-        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.40)  # 우측 조향 시 기존 유지
+        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.55)  # 좌측 조향 시 더 빠른 반응
+        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.55)  # 우측 조향 시 기존 유지
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
@@ -49,7 +49,7 @@ class LaneFollower:
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
         self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.035)
         self.max_servo_delta_left = rospy.get_param("~max_servo_delta_left", 0.05)  # 좌측 조향 시 더 큰 변화 허용
-        self.max_servo_delta_right = rospy.get_param("~max_servo_delta_right", 0.035)  # 우측 조향 시 기존 유지
+        self.max_servo_delta_right = rospy.get_param("~max_servo_delta_right", 0.05)  # 우측 조향 시 기존 유지
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
         self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.40)  # 좌측 조향 개선 (0.35 → 0.40)
