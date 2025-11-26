@@ -39,7 +39,7 @@ class LaneFollower:
         self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 중앙 정렬 (0.60 → 0.50)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
         self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 더 빠른 반응
-        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.55)  # 우측 조향 시 기존 유지
+        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.40)  # 우측 조향 시 기존 유지
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
