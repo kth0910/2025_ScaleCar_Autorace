@@ -70,6 +70,10 @@ class LidarAvoidancePlanner:
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
+        
+        # 조향 관성 (Smoothing) 파라미터
+        self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.7)  # 0.0~1.0 (클수록 관성 큼)
+        self.prev_servo_cmd = self.servo_center
 
         # 카메라-라이다 퓨전 설정
         self.enable_camera_fusion = rospy.get_param("~enable_camera_fusion", True)
@@ -261,8 +265,13 @@ class LidarAvoidancePlanner:
         
         # [중요] 조향 방향 반전 유지: PID 출력값을 서보 명령으로 변환할 때 부호 반전
         # (Left Turn이 Positive Angle -> 서보 값 감소)
-        servo_cmd = self.servo_center - self.servo_per_rad * steering_angle
-        servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
+        target_servo = self.servo_center - self.servo_per_rad * steering_angle
+        target_servo = clamp(target_servo, self.min_servo, self.max_servo)
+        
+        # 조향 관성 적용 (Low-Pass Filter)
+        # prev_servo_cmd와 target_servo 사이를 부드럽게 보간
+        servo_cmd = (self.steering_smoothing * self.prev_servo_cmd) + ((1.0 - self.steering_smoothing) * target_servo)
+        self.prev_servo_cmd = servo_cmd
 
         self._publish_path(scan.header, steering_angle, target_distance)
         self._publish_target_marker(scan.header, steering_angle, target_distance)
