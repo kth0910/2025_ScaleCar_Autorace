@@ -217,9 +217,8 @@ class LidarAvoidancePlanner:
         # 조향각 제한
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
-        # [중요] 조향 방향 반전 유지: PID 출력값을 서보 명령으로 변환할 때 부호 반전
-        # (Left Turn이 Positive Angle -> 서보 값 감소)
-        target_servo = self.servo_center - self.servo_per_rad * steering_angle
+        # [중요] 조향 방향 수정: Left Turn이 Positive Angle -> 서보 값 증가 (main_run.py와 통일)
+        target_servo = self.servo_center + self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
         # 조향 관성 적용 (Low-Pass Filter)
@@ -245,8 +244,6 @@ class LidarAvoidancePlanner:
         ranges = np.array(scan.ranges, dtype=np.float32)
         angles = scan.angle_min + np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
 
-        # 라이다가 180도 돌아가 있다고 가정하고 각도를 보정 (0도가 뒤쪽 -> 180도가 앞쪽)
-        angles = angles + math.pi
         # 각도를 [-π, π] 범위로 정규화
         angles = np.arctan2(np.sin(angles), np.cos(angles))
 
@@ -298,7 +295,8 @@ class LidarAvoidancePlanner:
         
         # 3단계: 전방 20도, 1m 이내 장애물만 인식 (회피 로직용)
         # 3-1. 전방 20도 필터링 (±10도)
-        front_angle_limit = math.radians(20.0) * 0.5  # ±10도
+        # 3-1. 전방 각도 필터링 (설정된 각도 사용)
+        front_angle_limit = self.front_obstacle_angle * 0.5
         front_angle_mask = np.abs(angles) <= front_angle_limit
         
         # 3-2. 거리 필터링 (1m 이내)
@@ -312,7 +310,7 @@ class LidarAvoidancePlanner:
         front_count = len(obstacle_points)
         
         if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found (front 20deg, < %.2fm)", obstacle_detection_range)
+            rospy.logdebug_throttle(2.0, "No obstacle points found (front FOV, < %.2fm)", obstacle_detection_range)
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[obstacle_mask]))
@@ -413,13 +411,8 @@ class LidarAvoidancePlanner:
         라이다 좌표계 180도 회전을 고려하여 각도에 π를 더한 위치를 확인.
         """
         # 전방 30도 이내 각도 필터링 (±15도)
-        # 라이다 좌표계 180도 회전: 각도에 π를 더한 위치가 전방
-        front_angle_half = self.front_obstacle_angle * 0.5
-        rotated_angles = angles + math.pi
-        # 각도를 [-π, π] 범위로 정규화
-        rotated_angles = np.where(rotated_angles > math.pi, rotated_angles - 2 * math.pi, rotated_angles)
-        rotated_angles = np.where(rotated_angles < -math.pi, rotated_angles + 2 * math.pi, rotated_angles)
-        front_mask = np.abs(rotated_angles) <= front_angle_half
+        # 전방 각도 필터링 (이미 0도가 전방으로 정렬됨)
+        front_mask = np.abs(angles) <= front_angle_half
         
         if not np.any(front_mask):
             return False
@@ -623,8 +616,8 @@ class LidarAvoidancePlanner:
         marker.scale.y = 0.08
         marker.scale.z = 0.08
         marker.color.a = 0.9
-        # 라이다 좌표계 180도 회전 후 화살표 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
-        display_angle = -steering_angle * self.arrow_angle_scale
+        # 화살표 방향 보정: 서보 각도보다 작게 스케일링
+        display_angle = steering_angle * self.arrow_angle_scale
         
         # 전진 시 파란색으로 표시
         marker.color.r = 0.1
@@ -648,8 +641,8 @@ class LidarAvoidancePlanner:
             travel = distance * ratio
             pose = PoseStamped()
             pose.header = header
-            # 라이다 좌표계 180도 회전 후 경로 방향 보정: 각도 반전 및 서보 각도보다 작게 스케일링
-            display_angle = -steering_angle * self.arrow_angle_scale
+            # 경로 방향 보정: 서보 각도보다 작게 스케일링
+            display_angle = steering_angle * self.arrow_angle_scale
             pose.pose.position.x = travel * math.cos(display_angle)
             pose.pose.position.y = travel * math.sin(display_angle)
             pose.pose.orientation.z = math.sin(display_angle * 0.5)
