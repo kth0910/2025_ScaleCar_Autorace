@@ -245,16 +245,6 @@ class LaneFollower:
         self.prev_center = filtered_center
         self.current_center = filtered_center
         self.current_center = filtered_center
-        
-        # ROI 색상 검출 및 시각화 (빨강/파랑/검정/흰색)
-        detected_color = self._process_and_publish_roi(frame)
-        self.current_detected_color = detected_color
-        self._update_speed_profile_from_color(detected_color)
-
-        left_exists = getattr(self.slidewindow, "left_exists", False)
-        right_exists = getattr(self.slidewindow, "right_exists", False)
-        left_x = getattr(self.slidewindow, "left_x", None)
-        right_x = getattr(self.slidewindow, "right_x", None)
         frame_width = getattr(self.slidewindow, "frame_width", self.desired_center * 2)
         lane_detected = left_exists or right_exists
 
