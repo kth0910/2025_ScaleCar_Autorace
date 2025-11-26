@@ -38,7 +38,7 @@ class LidarAvoidancePlanner:
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.15)  # 차폭 반경 15cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.30)  # 30cm부터 장애물 인식
-        # 속도 제어는 main_run.py에서 담당하므로 제거
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s (Main과 동일하게 설정)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 30.0))  # 전방 30도 이내 장애물 감지 각도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
@@ -48,7 +48,7 @@ class LidarAvoidancePlanner:
         self.path_points = max(2, int(rospy.get_param("~path_points", 10)))
 
         # Speed / steering output 설정
-        self.publish_ackermann = rospy.get_param("~publish_ackermann", True)
+        self.publish_ackermann = rospy.get_param("~publish_ackermann", False)
         self.publish_direct_controls = rospy.get_param("~publish_direct_controls", True)
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
         # 속도 제어는 main_run.py에서 담당하므로 제거
@@ -126,6 +126,9 @@ class LidarAvoidancePlanner:
         self.clearance_pub = rospy.Publisher(
             "lidar_avoidance/closest_obstacle", Float64, queue_size=1
         )
+        self.speed_command_pub = rospy.Publisher(
+            "lidar_avoidance/target_speed", Float64, queue_size=1
+        )
 
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
@@ -152,14 +155,22 @@ class LidarAvoidancePlanner:
         # 30cm 이하일 때는 정지 (15cm에서 완전 정지)
         hard_stop_distance = 0.15  # 15cm
         speed_reduction_start = 0.30  # 30cm
+        
+        target_speed = self.max_drive_speed
+        
         if closest <= hard_stop_distance:
             # 15cm 이하는 완전 정지
             rospy.logwarn_throttle(1.0, "Obstacle too close (%.2fm <= %.2fm). Emergency stop.", closest, hard_stop_distance)
             self._publish_stop(scan.header, reason="too_close")
-            return
+            target_speed = 0.0
         elif closest < speed_reduction_start:
-            # 15cm ~ 30cm: 속도 감소 (main_run.py에서 처리), 조향은 회피 계속
+            # 15cm ~ 30cm: 선형 감속
             rospy.logwarn_throttle(1.0, "Obstacle very close (%.2fm). Speed reduction active.", closest)
+            ratio = (closest - hard_stop_distance) / (speed_reduction_start - hard_stop_distance)
+            target_speed = self.max_drive_speed * ratio
+            
+        # 속도 명령 발행 (m/s)
+        self.speed_command_pub.publish(Float64(target_speed))
 
         # 카메라 퓨전 적용
         # obstacle_points: 회피 로직용 (60cm 이내만)

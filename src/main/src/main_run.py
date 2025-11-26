@@ -145,10 +145,10 @@ class LaneFollower:
         # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중
         rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
         
-        # 라이다 장애물 거리 구독 (속도 제어용) - 초기화 먼저
-        self.closest_obstacle = None
-        self.last_obstacle_time = 0.0
-        rospy.Subscriber("lidar_avoidance/closest_obstacle", Float64, self._obstacle_distance_callback, queue_size=1)
+        # 라이다 속도 명령 구독 (통합 제어용)
+        self.lidar_target_speed = self.max_drive_speed  # 초기값은 최대 속도
+        self.last_lidar_command_time = 0.0
+        rospy.Subscriber("lidar_avoidance/target_speed", Float64, self._lidar_speed_callback, queue_size=1)
         
         # 속도 제어 파라미터
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s
@@ -295,7 +295,8 @@ class LaneFollower:
         
         # 속도는 항상 main_run.py에서 제어 (라이다 제어 중이어도)
         # 라이다가 제어 중일 때는 조향만 라이다가 제어하고, 속도는 main_run.py가 제어
-        target_speed_pwm = self._compute_speed_with_obstacle()
+        # 라이다에서 온 속도 명령과 카메라 기반 속도 중 더 안전한(느린) 속도 선택
+        target_speed_pwm = self._compute_integrated_speed()
         self._publish_speed_command(target_speed_pwm)
         
         # 조향은 라이다가 제어 중이면 발행하지 않음
@@ -450,45 +451,34 @@ class LaneFollower:
         self.last_lidar_servo_time = rospy.get_time()
         self.lidar_controlling = True
     
-    def _obstacle_distance_callback(self, msg):
-        """라이다에서 가장 가까운 장애물 거리 수신"""
-        self.closest_obstacle = msg.data
-        self.last_obstacle_time = rospy.get_time()
+    def _lidar_speed_callback(self, msg):
+        """라이다에서 계산된 목표 속도 수신"""
+        self.lidar_target_speed = msg.data
+        self.last_lidar_command_time = rospy.get_time()
+        # 라이다 노드가 살아있음을 확인 (Ackermann 메시지 없이도 조향 권한 양보를 위해)
+        self.last_lidar_servo_time = rospy.get_time()
 
-    def _compute_speed_with_obstacle(self) -> float:
-        """장애물 거리에 따라 속도 계산"""
+    def _compute_integrated_speed(self) -> float:
+        """여러 소스의 속도 명령을 통합하여 최종 속도 계산"""
         current_time = rospy.get_time()
         dt = max(0.001, min(0.1, current_time - self.prev_time))
         self.prev_time = current_time  # 시간 업데이트
         
-        # 기본 속도 (PWM) - 범위 제한 (역회전 방지)
-        base_speed_mps = self._clamp(
+        # 1. 카메라 기반 기본 속도
+        camera_speed_mps = self._clamp(
             self.current_color_speed_mps, self.min_drive_speed, self.max_drive_speed
         )
-        base_pwm = self._drive_speed_to_pwm(base_speed_mps)
         
-        # 장애물이 감지되면 속도 감소
-        if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
-            closest = self.closest_obstacle
+        # 2. 라이다 기반 속도 명령 확인 (타임아웃 체크)
+        lidar_speed_mps = self.max_drive_speed
+        if (current_time - self.last_lidar_command_time) < 0.5:
+            lidar_speed_mps = self.lidar_target_speed
             
-            # 거리 기반 속도 감소: 30cm부터 점진적으로 감소, 20cm에서 완전 정지
-            speed_reduction_factor = 1.0
-            if closest < self.speed_reduction_start:
-                # 30cm ~ 15cm 구간에서 선형 감소
-                reduction_range = self.speed_reduction_start - self.hard_stop_distance
-                if reduction_range > 0:
-                    distance_in_range = closest - self.hard_stop_distance
-                    speed_reduction_factor = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
-            elif closest <= self.hard_stop_distance:
-                # 15cm 이하는 완전 정지 (min_pwm=0으로 설정)
-                speed_reduction_factor = 0.0
-            
-            # 속도 계산 (PWM/ERPM) - min_pwm 이상으로 유지
-            speed_range = self.max_pwm - self.min_pwm
-            target_pwm = self.min_pwm + speed_range * speed_reduction_factor
-        else:
-            # 장애물이 없으면 기본 속도 (범위 제한)
-            target_pwm = base_pwm
+        # 3. 통합: 가장 보수적인(느린) 속도 선택
+        final_speed_mps = min(camera_speed_mps, lidar_speed_mps)
+        
+        # 4. PWM 변환
+        target_pwm = self._drive_speed_to_pwm(final_speed_mps)
         
         # target_pwm을 범위 내로 확실히 제한 (역회전 방지)
         target_pwm = self._clamp(target_pwm, self.min_pwm, self.max_pwm)
@@ -502,8 +492,8 @@ class LaneFollower:
         else:
             limited_target = target_pwm
         
-        # limited_target도 범위 내로 제한
-        limited_target = self._clamp(limited_target, self.min_pwm, self.max_pwm)
+        # limited_target도 범위 내로 제한 (0.0 미만 절대 불가)
+        limited_target = max(0.0, self._clamp(limited_target, self.min_pwm, self.max_pwm))
         
         # 2단계: 지수적 스무딩 (더 부드러운 변화)
         smoothed_pwm = (
@@ -512,14 +502,14 @@ class LaneFollower:
         )
         
         # smoothed_pwm을 범위 내로 확실히 제한 (역회전 방지)
-        smoothed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
+        smoothed_pwm = max(0.0, self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm))
         
         # 최소 변화량 이하는 무시 (미세한 진동 방지)
         if abs(smoothed_pwm - self.current_speed_pwm) < 1.0:
             smoothed_pwm = self.current_speed_pwm
         
-        # 최종 값도 범위 확인 (이중 안전장치)
-        self.current_speed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
+        # 최종 값도 범위 확인 (이중 안전장치 - 절대 음수 불가)
+        self.current_speed_pwm = max(0.0, self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm))
         
         return self.current_speed_pwm
 
