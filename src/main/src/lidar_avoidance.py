@@ -38,7 +38,7 @@ class LidarAvoidancePlanner:
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV 180도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 4)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
