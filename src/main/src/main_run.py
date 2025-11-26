@@ -453,8 +453,8 @@ class LaneFollower:
         h, w = mask.shape[:2]
         polygon = np.array([[
             (int(0.05 * w), h),
-            (int(0.05 * w), int(0.65 * h)),
-            (int(0.95 * w), int(0.65 * h)),
+            (int(0.05 * w), int(0.75 * h)),
+            (int(0.95 * w), int(0.75 * h)),
             (int(0.95 * w), h),
         ]], dtype=np.int32)
         roi_mask = np.zeros_like(mask)
