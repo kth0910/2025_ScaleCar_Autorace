@@ -192,7 +192,7 @@ class LaneFollower:
         self.crosswalk_state = "IDLE"  # IDLE, APPROACHING, STOPPING, DONE
         self.stop_line_seen = False
         self.crosswalk_stop_start_time = 0.0
-        self.crosswalk_stop_duration = 5.0       # 5초 정지
+        self.crosswalk_stop_duration = 7.0       # 7초 정지
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
