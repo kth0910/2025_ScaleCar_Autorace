@@ -289,24 +289,23 @@ class LaneFollower:
         lane_detected = left_exists or right_exists
 
         self.center_pub.publish(Float64(self.current_center))
-        if left_exists and right_exists:
+        
+        if lane_detected:
             raw_error = self.desired_center - self.current_center
-            self.error_bias += self.bias_correction_gain * raw_error
-            self.error_bias = self._clamp(
-                self.error_bias, -self.max_error_bias, self.max_error_bias
-            )
+            
+            # 두 차선이 모두 보일 때만 오차 편향(bias) 학습
+            if left_exists and right_exists:
+                self.error_bias += self.bias_correction_gain * raw_error
+                self.error_bias = self._clamp(
+                    self.error_bias, -self.max_error_bias, self.max_error_bias
+                )
+            
+            # 학습된 편향을 모든 경우에 적용하여 보정
             error = raw_error - self.error_bias
-        elif left_exists:
-            target = self.single_left_ratio * frame_width
-            raw_error = target - left_x if left_x is not None else 0.0
-            error = raw_error
-        elif right_exists:
-            target = self.single_right_ratio * frame_width
-            raw_error = target - right_x if right_x is not None else 0.0
-            error = raw_error
         else:
             raw_error = 0.0
             error = 0.0
+        
         self.error_pub.publish(Float64(raw_error))
 
         current_time = rospy.get_time()
