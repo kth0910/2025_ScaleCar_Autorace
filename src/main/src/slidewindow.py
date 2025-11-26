@@ -30,8 +30,8 @@ class SlideWindow:
         nwindows = 12
         # 상위 윈도우는 곡률이 심할 때 너무 미리 반응하게 하므로,
         # 조향 계산에는 하단 윈도우만 우선적으로 사용합니다.
-        # 12개 중 하단 7개(약 60%)만 사용하여 "turns too early" 문제를 완화합니다.
-        calc_nwindows = 7
+        # 12개 중 하단 5개(약 40%)만 사용하여 "turns too early" 문제를 더욱 완화합니다.
+        calc_nwindows = 5
         
         window_height = height // nwindows
         margin = 35
