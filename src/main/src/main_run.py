@@ -782,7 +782,10 @@ class LaneFollower:
 
     def _detect_crosswalk(self, frame):
         """
-        BEV 변환 후 밝은 영역(Adaptive Threshold) 기반으로 횡단보도(수평 막대 패턴) 검출
+        BEV 변환 후 흰색 영역 추출 -> 세로로 긴 직사각형(횡단보도 패턴) 검출
+        사용자 요청: 
+        1. 하얀 부분 추출
+        2. 진행 방향에 수평인 막대인지 확인(세로가 더 긺) -> Zebra Crossing의 세로 줄무늬 검출
         """
         # 1. BEV 변환
         try:
@@ -790,72 +793,66 @@ class LaneFollower:
         except Exception:
             return False
         
-        # 2. BGR -> HLS 변환 후 L 채널 추출
-        hls = cv2.cvtColor(warped, cv2.COLOR_BGR2HLS)
-        L = hls[:, :, 1]
+        # 2. 흰색 영역 추출 (HLS 기반)
+        # 노이즈를 줄이기 위해 블러링
+        blur = cv2.GaussianBlur(warped, (5, 5), 0)
+        hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         
-        # 3. Adaptive Threshold (밝은 영역 추출)
-        # blockSize=21, C=5 (조정 가능)
-        thresh = cv2.adaptiveThreshold(L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 5)
+        # 흰색 정의: 명도(L)가 높고, 채도(S)는 크게 상관없으나 너무 높지 않은 것
+        # OpenCV HLS 범위: H(0-180), L(0-255), S(0-255)
+        lower_white = np.array([0, 170, 0])      # L > 170 (밝음)
+        upper_white = np.array([180, 255, 255])
+        white_mask = cv2.inRange(hls, lower_white, upper_white)
         
-        # 4. Morphology (Open -> Close) 노이즈 제거
+        # 3. Morphology (노이즈 제거)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        morph = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-        morph = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         
-        # 5. 윤곽선 검출
-        contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # 4. 윤곽선 검출
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         valid_rects = []
         debug_img = warped.copy() if self.enable_viz else None
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 300:  # 너무 작은 영역 제외
+            if area < 200:  # 너무 작은 노이즈 제외
                 continue
                 
-            # 회전된 직사각형 구하기
-            rect = cv2.minAreaRect(cnt)
-            (center, (w, h), angle) = rect
+            # Bounding Rect 구하기
+            x, y, w, h = cv2.boundingRect(cnt)
             
-            # 긴 변과 짧은 변 구분
-            long_side = max(w, h)
-            short_side = min(w, h)
-            
-            if short_side == 0: continue
-            
-            # Aspect Ratio 체크 (길쭉한 직사각형)
-            aspect_ratio = long_side / short_side
-            if aspect_ratio < 2.0:
+            # 조건: 세로가 더 길어야 함 (h > w)
+            # 횡단보도(Zebra Crossing)는 차 진행방향(세로)으로 긴 줄무늬가 가로로 나열됨
+            if h < w * 1.5: # 최소 1.5배 이상 길쭉한 세로 막대
                 continue
                 
-            # 방향 체크: 차 진행 방향(수직)에 대해 수직(수평)이어야 함
-            # Bounding Rect의 aspect ratio가 w > h 인지 확인 (수평 막대)
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            if bw < bh * 1.5: # 수직에 가깝거나 정사각형이면 제외 (수평이어야 함)
+            # 채워진 비율(Solidity) 체크: 직사각형에 가까워야 함
+            rect_area = w * h
+            solidity = float(area) / rect_area
+            if solidity < 0.7: # 70% 이상 채워져 있어야 함
                 continue
             
-            valid_rects.append(rect)
+            valid_rects.append((x, y, w, h))
             
             if self.enable_viz:
-                box = cv2.boxPoints(rect)
-                box = np.int0(box)
-                cv2.drawContours(debug_img, [box], 0, (0, 255, 0), 2)
+                cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
-        # 6. 패턴 인식: 평행한 줄이 여러 개 있는지 (3개 이상)
+        # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (3개 이상)
         is_crosswalk = False
         if len(valid_rects) >= 3:
-            # Y 좌표 기준으로 정렬 (위아래로 쌓여있는지 확인)
-            valid_rects.sort(key=lambda r: r[0][1])
+            # X 좌표 기준으로 정렬 (좌->우로 나열된 패턴인지 확인 가능)
+            valid_rects.sort(key=lambda r: r[0])
             
-            # 추가 검증: X 좌표가 비슷한지 (일렬로 정렬) 확인 가능하나 일단 개수로 판단
+            # 단순히 개수로 판단 (3개 이상이면 횡단보도)
             is_crosswalk = True
             if self.enable_viz:
                 cv2.putText(debug_img, "Crosswalk Detected!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
         if self.enable_viz:
             cv2.imshow("Crosswalk Debug", debug_img)
-            # cv2.imshow("Crosswalk Thresh", morph)
+            # cv2.imshow("Crosswalk Mask", mask)
             
         return is_crosswalk
 
