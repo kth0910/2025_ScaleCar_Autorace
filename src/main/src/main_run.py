@@ -814,30 +814,34 @@ class LaneFollower:
         pass
 
     def _init_sign_templates(self):
-        """좌/우 화살표 템플릿 생성 (곡선형 화살표)"""
+        """좌/우 화살표 템플릿 생성 (곡선형 화살표, 회전 중심을 템플릿 중앙에 정렬)"""
         self.sign_template_size = (64, 64)
-        thickness = 10
+        thickness = 12
+        radius = 20
+        center_x, center_y = 32, 32
         
-        # 1. Left Arrow Template (Curved)
+        # 1. Left Arrow Template
         self.template_left = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 곡선 그리기 (90도 턴)
-        # Center(12, 52), Radius 20, Arc 270~360 (Top to Right) -> (12,32) to (32,52)
-        cv2.ellipse(self.template_left, (12, 52), (20, 20), 0, 270, 360, 255, thickness)
-        # 수직 스템 (아래쪽)
-        cv2.line(self.template_left, (32, 52), (32, 64), 255, thickness)
-        # 화살촉 (왼쪽)
-        pts_left = np.array([[2, 32], [16, 20], [16, 44]], np.int32)
+        # 곡선 그리기 (Center(32,32), Radius 20, Top-Right Quadrant)
+        # 270도(상) ~ 360도(우) 사이의 호를 그립니다.
+        cv2.ellipse(self.template_left, (center_x, center_y), (radius, radius), 0, 270, 360, 255, thickness)
+        # 수직 스템 (오른쪽 아래로 내려감)
+        cv2.line(self.template_left, (center_x + radius, center_y), (center_x + radius, 64), 255, thickness)
+        # 화살촉 (왼쪽, 상단 끝점 (32, 12)에 위치)
+        # Tip at (10, 12), Base at (34, 0) ~ (34, 24)
+        pts_left = np.array([[10, 12], [34, 0], [34, 24]], np.int32)
         cv2.fillPoly(self.template_left, [pts_left], 255)
         
-        # 2. Right Arrow Template (Curved)
+        # 2. Right Arrow Template
         self.template_right = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 곡선 그리기 (90도 턴)
-        # Center(52, 52), Radius 20, Arc 180~270 (Left to Top) -> (32,52) to (52,32)
-        cv2.ellipse(self.template_right, (52, 52), (20, 20), 0, 180, 270, 255, thickness)
-        # 수직 스템 (아래쪽)
-        cv2.line(self.template_right, (32, 52), (32, 64), 255, thickness)
-        # 화살촉 (오른쪽)
-        pts_right = np.array([[62, 32], [48, 20], [48, 44]], np.int32)
+        # 곡선 그리기 (Center(32,32), Radius 20, Top-Left Quadrant)
+        # 180도(좌) ~ 270도(상) 사이의 호를 그립니다.
+        cv2.ellipse(self.template_right, (center_x, center_y), (radius, radius), 0, 180, 270, 255, thickness)
+        # 수직 스템 (왼쪽 아래로 내려감)
+        cv2.line(self.template_right, (center_x - radius, center_y), (center_x - radius, 64), 255, thickness)
+        # 화살촉 (오른쪽, 상단 끝점 (32, 12)에 위치)
+        # Tip at (54, 12), Base at (30, 0) ~ (30, 24)
+        pts_right = np.array([[54, 12], [30, 0], [30, 24]], np.int32)
         cv2.fillPoly(self.template_right, [pts_right], 255)
 
     def _detect_traffic_sign(self, frame):
