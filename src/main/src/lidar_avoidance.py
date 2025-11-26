@@ -49,7 +49,7 @@ class LidarAvoidancePlanner:
 
         # Speed / steering output 설정
         self.publish_ackermann = rospy.get_param("~publish_ackermann", False)
-        self.publish_direct_controls = rospy.get_param("~publish_direct_controls", True)
+        self.publish_direct_controls = rospy.get_param("~publish_direct_controls", False)
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
         # 속도 제어는 main_run.py에서 담당하므로 제거
         self.servo_center = rospy.get_param("~servo_center", 0.53)
@@ -128,6 +128,9 @@ class LidarAvoidancePlanner:
         )
         self.speed_command_pub = rospy.Publisher(
             "lidar_avoidance/target_speed", Float64, queue_size=1
+        )
+        self.steering_command_pub = rospy.Publisher(
+            "lidar_avoidance/steering_cmd", Float64, queue_size=1
         )
 
         self.last_scan_time = rospy.get_time()
@@ -243,6 +246,11 @@ class LidarAvoidancePlanner:
 
         self._publish_path(scan.header, steering_angle, target_distance)
         self._publish_target_marker(scan.header, steering_angle, target_distance)
+        
+        # 장애물이 감지된 경우(빨간 마커)에만 조향 명령 발행
+        if len(obstacle_points) > 0:
+            self.steering_command_pub.publish(Float64(servo_cmd))
+            
         self._publish_motion_commands(
             scan.header,
             steering_angle,

@@ -157,6 +157,11 @@ class LaneFollower:
         self.lidar_target_speed = self.max_drive_speed  # 초기값은 최대 속도
         self.last_lidar_command_time = 0.0
         rospy.Subscriber("lidar_avoidance/target_speed", Float64, self._lidar_speed_callback, queue_size=1)
+        
+        # 라이다 조향 명령 구독 (장애물 회피용)
+        self.lidar_steering_cmd = self.steering_offset
+        self.last_lidar_steering_time = 0.0
+        rospy.Subscriber("lidar_avoidance/steering_cmd", Float64, self._lidar_steering_callback, queue_size=1)
         # 색상 기반 속도 제어 파라미터
         self.neutral_lane_speed = rospy.get_param(
             "~neutral_lane_speed",
@@ -191,9 +196,12 @@ class LaneFollower:
 
         # 2. 조향 제어 (라이다 우선권 확인)
         current_time = rospy.get_time()
-        is_lidar_controlling = (current_time - self.last_lidar_servo_time < self.lidar_timeout)
-
-        if not is_lidar_controlling:
+        
+        # 라이다 조향 명령이 최근(0.5초 이내)에 있었으면 라이다 우선
+        if (current_time - self.last_lidar_steering_time) < 0.5:
+            self.last_servo_publish_time = current_time
+            self._publish_servo_command(self.lidar_steering_cmd)
+        else:
             # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
             # 단, 카메라 데이터가 최신일 때만 (0.5초 이내)
             if (current_time - self.last_image_time) < 0.5:
@@ -459,8 +467,12 @@ class LaneFollower:
         """라이다에서 계산된 목표 속도 수신"""
         self.lidar_target_speed = msg.data
         self.last_lidar_command_time = rospy.get_time()
-        # 라이다 노드가 살아있음을 확인 (Ackermann 메시지 없이도 조향 권한 양보를 위해)
-        self.last_lidar_servo_time = rospy.get_time()
+        # 속도 명령만 수신하고 조향 권한은 양보하지 않음 (차선 추종 유지)
+        
+    def _lidar_steering_callback(self, msg):
+        """라이다에서 계산된 조향 명령 수신 (장애물 회피 시에만 들어옴)"""
+        self.lidar_steering_cmd = msg.data
+        self.last_lidar_steering_time = rospy.get_time()
 
     def _compute_integrated_speed(self) -> float:
         """여러 소스의 속도 명령을 통합하여 최종 속도 계산"""
