@@ -37,9 +37,9 @@ class LidarAvoidancePlanner:
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.15)  # 차폭 반경 15cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
-        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.30)  # 30cm부터 장애물 인식
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.75)  # m/s (Main과 동일하게 설정)
-        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 30.0))  # 전방 30도 이내 장애물 감지 각도
+        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 1m부터 장애물 인식
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
+        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 45.0))  # 전방 45도 이내 장애물 감지 각도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
@@ -321,8 +321,8 @@ class LidarAvoidancePlanner:
         front_angle_limit = math.radians(20.0) * 0.5  # ±10도
         front_angle_mask = np.abs(angles) <= front_angle_limit
         
-        # 3-2. 거리 필터링 (30cm 이내)
-        obstacle_detection_range = 0.3  # 30cm
+        # 3-2. 거리 필터링 (1m 이내)
+        obstacle_detection_range = 1.0  # 1m
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
@@ -377,11 +377,11 @@ class LidarAvoidancePlanner:
         
         # 포인트가 적으면 클러스터링 없이 모두 반환 (가까운 장애물은 작은 포인트 수로도 인식)
         if len(points) < self.min_obstacle_points:
-            # 포인트가 적어도 0.3m 이내 장애물이면 모두 인식 (벽 등 큰 장애물도 인식)
+            # 포인트가 적어도 1m 이내 장애물이면 모두 인식 (벽 등 큰 장애물도 인식)
             distances = np.linalg.norm(points, axis=1)
             min_dist = float(np.min(distances))
-            obstacle_detection_range = 0.3  # 0.3m
-            if min_dist < obstacle_detection_range:  # 0.3m 이내는 클러스터링 없이도 인식
+            obstacle_detection_range = 1.0  # 1m
+            if min_dist < obstacle_detection_range:  # 1m 이내는 클러스터링 없이도 인식
                 rospy.logdebug_throttle(2.0, "Keeping %d points without clustering (min_dist=%.2fm)", len(points), min_dist)
                 return points
             return np.zeros((0, 2), dtype=np.float32)
@@ -415,9 +415,9 @@ class LidarAvoidancePlanner:
             # 원본 포인트의 최소 거리를 확인
             distances = np.linalg.norm(points, axis=1)
             min_dist = float(np.min(distances))
-            obstacle_detection_range = 0.3  # 0.3m
+            obstacle_detection_range = 1.0  # 1m
             if min_dist < obstacle_detection_range:
-                # 0.3m 이내 장애물이면 클러스터링 없이도 모두 반환
+                # 1m 이내 장애물이면 클러스터링 없이도 모두 반환
                 rospy.logwarn_throttle(1.0, "Clustering filtered all points, but min_dist=%.2fm < %.2fm. Returning all points.", 
                                       min_dist, obstacle_detection_range)
                 return points
@@ -632,7 +632,7 @@ class LidarAvoidancePlanner:
 
         norm_clearance = clearance / self.max_range
         
-        # 각 방향의 장애물 밀도 계산 (장애물이 가장 적은 방향 선택)
+        # 각 방향의 장애물 밀도 계산 (장애물이 가장 적은 곳 선택)
         obstacle_density = np.zeros_like(angles, dtype=np.float32)
         if obstacle_angles is not None and len(obstacle_angles) > 0:
             # 각 경로 각도에 대해 주변 장애물 개수 계산
@@ -738,7 +738,7 @@ class LidarAvoidancePlanner:
         if len(obstacle_points) > 0 and len(all_points) > 0:
             # 모든 포인트의 거리 계산
             all_distances = np.linalg.norm(all_points, axis=1)
-            obstacle_detection_range = 0.3  # 0.3m
+            obstacle_detection_range = 1.0  # 1m
             close_mask = all_distances < obstacle_detection_range  # 0.3m 이내
             
             # 60cm 이내인 포인트만 빨간색 마커로 표시

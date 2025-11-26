@@ -150,7 +150,7 @@ class LaneFollower:
         self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM (3000 ~ 0.65m/s)
         self.min_pwm = rospy.get_param("~min_pwm", 0.0)  # ERPM (0 = Stop)
         self.min_moving_pwm = rospy.get_param("~min_moving_pwm", 900.0)  # ERPM (최소 구동 토크)
-        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
+        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 1.0)  # 1m부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         speed_pwm_param = rospy.get_param("~speed", 2000.0)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 5000.0)  # PWM 변화율 (빠른 반응을 위해 대폭 상향)
@@ -507,12 +507,13 @@ class LaneFollower:
                 # 15cm 이하는 완전 정지
                 lidar_safe_speed_mps = 0.0
             elif closest < self.speed_reduction_start:
-                # 15cm ~ 30cm 구간에서 선형 감소
+                # 15cm ~ 1m 구간에서 선형 감소 (최대 0.3m/s에서 0.0m/s로)
                 reduction_range = self.speed_reduction_start - self.hard_stop_distance
                 if reduction_range > 0:
                     distance_in_range = closest - self.hard_stop_distance
                     ratio = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
-                    lidar_safe_speed_mps = self.max_drive_speed * ratio
+                    # 장애물 감지 시 최대 속도는 0.3m/s로 제한
+                    lidar_safe_speed_mps = 0.3 * ratio
             
         # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
