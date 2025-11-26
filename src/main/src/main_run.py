@@ -193,6 +193,15 @@ class LaneFollower:
         self.stop_line_seen = False
         self.crosswalk_stop_start_time = 0.0
         self.crosswalk_stop_duration = 7.0       # 7초 정지
+        
+        # 표지판 제어 변수
+        self.sign_state = "IDLE"  # IDLE, APPROACHING, STOPPING, TURNING
+        self.sign_direction = "Unknown"
+        self.sign_timer = 0.0
+        self.sign_stop_line_seen = False
+        self.sign_stop_duration = 0.5
+        self.sign_turn_duration = 0.5
+        self.turn_servo_offset = 0.35  # 30도에 해당하는 서보 오프셋 (약 0.35)
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
@@ -215,6 +224,16 @@ class LaneFollower:
         if use_lidar_steering:
             self.last_servo_publish_time = current_time
             self._publish_servo_command(self.lidar_steering_cmd)
+        elif self.sign_state == "TURNING":
+            # 표지판 회전 동작 수행 (강제 조향)
+            self.last_servo_publish_time = current_time
+            if self.sign_direction == "LEFT":
+                # 왼쪽: + 방향
+                target_servo = self.steering_offset + self.turn_servo_offset
+            else:
+                # 오른쪽: - 방향
+                target_servo = self.steering_offset - self.turn_servo_offset
+            self._publish_servo_command(target_servo)
         else:
             # 그 외 색상(Red, Blue, White, None)이거나 라이다 명령이 없으면 카메라 차선 추종
             # 단, 카메라 데이터가 최신일 때만 (0.5초 이내)
@@ -230,10 +249,27 @@ class LaneFollower:
             return
 
             self._setup_trackbars()
+            self._setup_trackbars()
             self.initialized = True
 
-        # 표지판 인식 수행
-        self._detect_traffic_sign(frame)
+        # 표지판 로직 상태 머신
+        if self.sign_state == "IDLE":
+            # IDLE 상태일 때만 표지판 감지 시도
+            self._detect_traffic_sign(frame)
+        
+        elif self.sign_state == "APPROACHING":
+            # 정지선 감지 (횡단보도 로직의 _detect_stop_line 재사용)
+            # 주의: _detect_stop_line 메소드가 존재해야 함
+            has_stop_line = self._detect_stop_line(frame)
+            
+            if has_stop_line:
+                self.sign_stop_line_seen = True
+            
+            # 정지선을 보았다가 사라지면 정지
+            if self.sign_stop_line_seen and not has_stop_line:
+                self.sign_state = "STOPPING"
+                self.sign_timer = rospy.get_time()
+                rospy.loginfo(f"Stop line passed. Stopping for sign ({self.sign_direction}).")
 
         # 횡단보도 로직 상태 머신
         if self.crosswalk_state == "IDLE":
@@ -564,6 +600,27 @@ class LaneFollower:
             else:
                 self.crosswalk_state = "DONE"
                 rospy.loginfo("Crosswalk stop finished. Logic disabled permanently.")
+
+        # [Override] 표지판 제어 로직 (정지 -> 회전)
+        if self.sign_state == "STOPPING":
+            elapsed = current_time - self.sign_timer
+            if elapsed < self.sign_stop_duration:
+                final_speed_mps = 0.0
+            else:
+                self.sign_state = "TURNING"
+                self.sign_timer = current_time
+                rospy.loginfo(f"Sign Stop done. Turning {self.sign_direction}...")
+        
+        if self.sign_state == "TURNING":
+            elapsed = current_time - self.sign_timer
+            if elapsed < self.sign_turn_duration:
+                # 회전 시 속도 (너무 빠르지 않게)
+                final_speed_mps = self.neutral_lane_speed
+            else:
+                self.sign_state = "IDLE"
+                self.sign_direction = "Unknown"
+                self.sign_stop_line_seen = False
+                rospy.loginfo("Sign Turn done. Back to IDLE.")
 
         # 4. PWM 변환
         target_pwm = self._drive_speed_to_pwm(final_speed_mps)
@@ -902,6 +959,13 @@ class LaneFollower:
             elif right_sum > left_sum * 1.1:
                 direction = "LEFT"
             
+            # 상태 업데이트 (IDLE일 때만)
+            if direction != "Unknown" and self.sign_state == "IDLE":
+                self.sign_state = "APPROACHING"
+                self.sign_direction = direction
+                self.sign_stop_line_seen = False
+                rospy.loginfo(f"Traffic Sign Detected: {direction}. Waiting for stop line.")
+
             # 디버깅 로그
             rospy.loginfo_throttle(0.5, f"Sign Pixel Sums -> L(Bottom-Left): {left_sum}, R(Bottom-Right): {right_sum} => {direction}")
             
