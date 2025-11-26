@@ -445,68 +445,83 @@ class LidarAvoidancePlanner:
     ) -> Tuple[Optional[float], float, float]:
         """
         장애물 마커(obstacle_points)를 기반으로 최적의 경로를 선택하는 로직.
-        여러 후보 경로(조향각)를 생성하고, 각 경로에 대해 장애물과의 충돌 여부 및 거리를 평가하여 점수를 매김.
+        반경 1m 내의 장애물 밀도를 평가하고, 10cm 이내 접근 시 강력한 페널티를 부여하여
+        장애물 밀도가 낮은 곳으로 주행하도록 유도함.
         """
-        # 후보 경로 생성 (최대 조향각 범위 내에서 50개 샘플)
-        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 50)
+        # 후보 경로 생성 (정밀도를 위해 샘플 수 증가: 50 -> 90)
+        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 90)
         
         best_score = -float('inf')
         best_angle = 0.0
         best_dist = 0.0
         found_valid_path = False
 
-        # 장애물이 없으면 직진 (또는 중앙 유지)
+        # 장애물이 없으면 직진
         if obstacle_points is None or len(obstacle_points) == 0:
             return 0.0, self.lookahead_distance, 1.0
 
         # 벡터화 연산을 위한 준비
         ox = obstacle_points[:, 0]
         oy = obstacle_points[:, 1]
+        
+        # 사용자 요청: 반경 1m 내에서 탐색
+        check_distance = 1.0
 
         for angle in candidate_angles:
             # 경로 벡터 (단위 벡터)
             path_x = math.cos(angle)
             path_y = math.sin(angle)
             
-            # 1. 경로상 투영 거리 (전방 거리, dot product)
+            # 1. 경로상 투영 거리 (전방 거리)
             dots = ox * path_x + oy * path_y
             
-            # 2. 경로 수직 거리 (측면 거리, cross product magnitude)
+            # 2. 경로 수직 거리 (측면 거리)
             crosses = np.abs(path_x * oy - path_y * ox)
             
-            # 유효한 장애물 필터링:
-            # - 경로 전방에 있고 (dots > 0)
-            # - 고려할 거리(lookahead) 이내에 있는 것
-            valid_mask = (dots > 0) & (dots < self.lookahead_distance)
+            # 유효한 장애물 필터링: 전방에 있고(dots > 0), 1m 이내에 있는 것(check_distance)
+            valid_mask = (dots > 0) & (dots < check_distance)
             
-            # 충돌 여부 확인:
-            # - 유효한 장애물 중, 측면 거리가 차폭(inflation_margin) 이내인 경우
+            # 충돌 여부 확인 (차폭 이내)
             collision_mask = valid_mask & (crosses < self.inflation_margin)
             
             if np.any(collision_mask):
-                # 충돌 발생: 가장 가까운 충돌 지점까지의 거리가 주행 가능 거리
+                # 충돌 발생: 가장 가까운 충돌 지점까지의 거리
                 min_dist = np.min(dots[collision_mask])
-                # 충돌이 발생하는 경로는 점수를 매우 낮게 (거리가 짧을수록 더 낮게)
-                # 하지만 완전히 배제하면 갇혔을 때 아무것도 안하므로, 
-                # 충돌까지의 거리를 점수에 반영하여 "그나마 가장 멀리 갈 수 있는" 충돌 경로라도 선택하게 함
-                score = -1000.0 + min_dist  # 기본적으로 매우 낮은 점수
+                # 충돌 경로는 매우 낮은 점수 (-10000)
+                score = -10000.0 + min_dist
             else:
-                # 충돌 없음: 주행 가능 거리는 lookahead_distance
-                min_dist = self.lookahead_distance
+                # 충돌 없음
+                min_dist = check_distance
                 
-                # 추가 페널티: 충돌은 안하지만 장애물에 너무 가까운 경우
-                # 차폭 + 20cm 여유 공간 이내에 장애물이 있으면 페널티 부과
-                close_mask = valid_mask & (crosses < (self.inflation_margin + 0.2))
+                # 1. 근접 페널티 (10cm 이내 접근 시 대폭 강화)
+                # inflation_margin + 10cm 이내의 장애물에 대해 강력한 페널티 부여
+                danger_threshold = self.inflation_margin + 0.10
+                danger_mask = valid_mask & (crosses < danger_threshold)
+                
                 proximity_penalty = 0.0
-                if np.any(close_mask):
-                    # 가까울수록(crosses가 작을수록) 페널티 증가
-                    proximity_penalty = np.sum(1.0 / (crosses[close_mask] + 0.1))
+                if np.any(danger_mask):
+                    # 차폭 경계로부터의 거리 (0 ~ 0.1m)
+                    dists_from_edge = crosses[danger_mask] - self.inflation_margin
+                    # 거리가 가까울수록 페널티가 기하급수적으로 증가
+                    # 100.0 가중치로 대폭 강화 (충돌 직전 상황 회피)
+                    proximity_penalty = np.sum(100.0 / (dists_from_edge + 0.01))
                 
-                # 점수 계산:
-                # 1. 주행 가능 거리 (클수록 좋음, 여기선 상수)
-                # 2. 조향 각도 (작을수록 좋음 - 직진 선호)
-                # 3. 근접 페널티 (작을수록 좋음)
-                score = (self.clearance_weight * min_dist) - (self.heading_weight * abs(angle)) - (0.1 * proximity_penalty)
+                # 2. 밀도 페널티 (주변 장애물 개수)
+                # 차폭보다 조금 더 넓은 범위(예: 차폭 + 40cm) 내의 장애물 개수를 세어 밀도가 낮은 곳 선호
+                density_threshold = self.inflation_margin + 0.40
+                density_mask = valid_mask & (crosses < density_threshold)
+                density_count = np.sum(density_mask)
+                
+                # 점수 계산
+                # - 주행 가능 거리 (클수록 좋음)
+                # - 조향 각도 (작을수록 좋음 - 직진 선호)
+                # - 근접 페널티 (작을수록 좋음 - 매우 큼)
+                # - 밀도 (작을수록 좋음 - 장애물 적은 곳 선호)
+                score = (5.0 * min_dist) \
+                        - (self.heading_weight * abs(angle)) \
+                        - (1.0 * proximity_penalty) \
+                        - (0.5 * density_count)
+                
                 found_valid_path = True
 
             if score > best_score:
@@ -514,14 +529,10 @@ class LidarAvoidancePlanner:
                 best_angle = angle
                 best_dist = min_dist
         
-        if not found_valid_path and best_score < -500:
-             # 모든 경로가 충돌하거나 유효하지 않음 -> 정지 신호?
-             # 하지만 여기선 최선의(가장 늦게 충돌하는) 경로를 반환
+        if not found_valid_path and best_score < -5000:
+             # 모든 경로가 충돌 위험
              pass
 
-        # 라이다 좌표계 변환 불필요 (이미 라이다 좌표계 기준 계산)
-        # target_angle은 라이다 전방(x축) 기준 각도이므로 그대로 사용
-        
         rospy.logdebug_throttle(0.5, "Best Angle: %.2f deg, Score: %.2f", math.degrees(best_angle), best_score)
         
         return best_angle, best_dist, best_score
