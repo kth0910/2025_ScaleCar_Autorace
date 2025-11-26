@@ -35,7 +35,7 @@ class LidarAvoidancePlanner:
         self.max_range = rospy.get_param("~max_range", 8.0)
         self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 35cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.45)  # 라바콘 연결을 위해 0.45m로 증대 (반경 0.6m 효과)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
@@ -467,7 +467,7 @@ class LidarAvoidancePlanner:
         # 2. Safety Bubble 적용 (모든 장애물에 대해)
         # 기존: 가장 가까운 점 하나만 처리 -> 수정: 일정 거리 이내 모든 점 처리하여 라바콘 사이를 벽으로 인식
         
-        obstacle_dist_limit = 1.5  # 1.5m 이내의 모든 장애물을 부풀림
+        obstacle_dist_limit = 2.5  # 2.5m 이내의 모든 장애물을 부풀림 (멀리 있는 라바콘도 미리 연결)
         # 유효한 장애물 인덱스 추출
         obs_indices = np.where((proc_ranges < obstacle_dist_limit) & (proc_ranges > 0.01))[0]
         
