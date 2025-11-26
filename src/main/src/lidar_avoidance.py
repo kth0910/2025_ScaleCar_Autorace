@@ -53,11 +53,11 @@ class LidarAvoidancePlanner:
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
         # 속도 제어는 main_run.py에서 담당하므로 제거
         self.servo_center = rospy.get_param("~servo_center", 0.53)
-        self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.28)
+        self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.95)  # 라디안 당 서보 변화량 (0.28 -> 0.95로 대폭 상향하여 조향각 확보)
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
-            rospy.get_param("~max_steering_angle_deg", 30.0)
+            rospy.get_param("~max_steering_angle_deg", 45.0)  # 최대 조향각 45도로 확장
         )
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
