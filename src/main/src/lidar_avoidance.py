@@ -35,7 +35,7 @@ class LidarAvoidancePlanner:
         self.max_range = rospy.get_param("~max_range", 8.0)
         self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 35cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.45)  # 라바콘 연결을 위해 0.45m로 증대 (반경 0.6m 효과)
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.35)  # 0.45m는 너무 커서 길을 막음 -> 0.35m로 완화
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
@@ -235,7 +235,7 @@ class LidarAvoidancePlanner:
         # 조향각 제한
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
-        # [중요] 조향 방향 수정: 180도 회전으로 인한 좌우 반전을 보정하기 위해 부호 반전 (더하기 -> 빼기)
+        # [중요] 조향 방향 수정: 데이터는 좌우 반전(Mirror) 상태이므로, 조향도 반대로(빼기) 해야 올바른 방향으로 감
         target_servo = self.servo_center - self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
@@ -268,8 +268,6 @@ class LidarAvoidancePlanner:
         ranges = np.array(scan.ranges, dtype=np.float32)
         angles = scan.angle_min + np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
 
-        # 라이다가 180도 돌아가 있다고 가정하고 각도를 보정 (0도가 뒤쪽 -> 180도가 앞쪽)
-        angles = angles + math.pi
         # 각도를 [-π, π] 범위로 정규화
         angles = np.arctan2(np.sin(angles), np.cos(angles))
 
@@ -308,8 +306,8 @@ class LidarAvoidancePlanner:
         # LaserScan 표준 좌표계: x = r * cos(angle), y = r * sin(angle)
         # RViz에서 표시되는 좌표계와 동일하게 변환
         xy = np.zeros((len(ranges), 2), dtype=np.float32)
-        xy[:, 0] = ranges * np.cos(angles)  # 원본 좌표계
-        xy[:, 1] = ranges * np.sin(angles)  # 원본 좌표계
+        xy[:, 0] = ranges * np.cos(angles)  # x = r * cos(theta)
+        xy[:, 1] = -ranges * np.sin(angles) # y = -r * sin(theta) (좌우 반전 보정 for Visualization)
         
         # 2단계: 전방 포인트 필터링 (라이다가 180도 회전되어 있다면 전방이 음수 x)
         # detect_obstacles.py 참고: x_forward = -x, y_lateral = y
@@ -510,11 +508,10 @@ class LidarAvoidancePlanner:
         ends = np.where(diff == -1)[0]
         
         if len(starts) == 0:
-            # 여전히 Gap이 없으면 가장 먼 곳으로
+            # Gap이 없으면 가장 깊은(먼) 곳을 향해 조향 (직진 대신 탈출 시도)
             max_idx = np.argmax(proc_ranges)
-            if proc_ranges[max_idx] < 0.3:
-                self._publish_fgm_debug(header, proc_ranges, angles, None, None, None)
-                return None, 0.0, 0.0
+            rospy.logwarn_throttle(0.5, "FGM: No Gap found! Heading to max depth (%.2fm, %.1f deg)", 
+                                   proc_ranges[max_idx], math.degrees(angles[max_idx]))
             
             self._publish_fgm_debug(header, proc_ranges, angles, None, None, max_idx)
             return angles[max_idx], proc_ranges[max_idx], 0.5
@@ -562,9 +559,11 @@ class LidarAvoidancePlanner:
             debug_scan = LaserScan()
             debug_scan.header = header
             debug_scan.header.frame_id = "laser" # 강제 설정 (필요시)
-            debug_scan.angle_min = angles[0]
-            debug_scan.angle_max = angles[-1]
-            debug_scan.angle_increment = angle_res
+            # 라이다 좌우 반전 보정: 스캔 데이터 순서를 역순으로 해석하도록 설정
+            # Index 0이 원래 Right(-)였으나 실제로는 Left(+)를 가리킴
+            debug_scan.angle_min = angles[-1]  # Positive (Left)
+            debug_scan.angle_max = angles[0]   # Negative (Right)
+            debug_scan.angle_increment = -angle_res # 감소 방향
             debug_scan.range_min = 0.0
             debug_scan.range_max = self.max_range
             debug_scan.ranges = proc_ranges.tolist()
@@ -603,7 +602,7 @@ class LidarAvoidancePlanner:
                 if r > 0.1:  # 유효한 거리만 표시
                     p = Point()
                     p.x = float(r * math.cos(a))
-                    p.y = float(r * math.sin(a))
+                    p.y = float(-r * math.sin(a)) # 좌우 반전 보정 (y = -y)
                     gap_marker.points.append(p)
         else:
             gap_marker.action = Marker.DELETE
@@ -629,7 +628,7 @@ class LidarAvoidancePlanner:
             r = ranges[goal_idx]
             a = angles[goal_idx]
             goal_marker.pose.position.x = float(r * math.cos(a))
-            goal_marker.pose.position.y = float(r * math.sin(a))
+            goal_marker.pose.position.y = float(-r * math.sin(a)) # 좌우 반전 보정 (y = -y)
             goal_marker.pose.orientation.w = 1.0
         else:
             goal_marker.action = Marker.DELETE
