@@ -145,7 +145,7 @@ class LaneFollower:
         rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
         
         # 속도 제어 파라미터
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.75)  # m/s (0.7m/s 지원을 위해 상향)
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
         self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM (3000 ~ 0.65m/s)
         self.min_pwm = rospy.get_param("~min_pwm", 0.0)  # ERPM (0 = Stop)
@@ -519,6 +519,11 @@ class LaneFollower:
         # 3. 통합: 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
+        # [Override] Red/Blue 색상 검출 시 속도 및 로그 오버라이드
+        if self.current_detected_color in ["red", "blue"]:
+            rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
+            final_speed_mps = self.current_color_speed_mps
+        
         # 4. PWM 변환
         target_pwm = self._drive_speed_to_pwm(final_speed_mps)
         
@@ -663,7 +668,7 @@ class LaneFollower:
         else:
             target_speed = self.neutral_lane_speed
 
-        target_speed = self._clamp(target_speed, self.min_drive_speed, self.max_drive_speed)
+        target_speed = max(self.min_drive_speed, target_speed)
         if abs(target_speed - self.current_color_speed_mps) < 1e-3:
             return
 
