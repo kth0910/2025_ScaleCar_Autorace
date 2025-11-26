@@ -541,6 +541,23 @@ class LaneFollower:
         # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
+        # [Override] Red/Blue 색상 검출 시 속도 고정 (라이다 안전 속도 무시)
+        if self.current_detected_color in ["red", "blue"]:
+            rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
+            final_speed_mps = self.current_color_speed_mps
+        
+        # [Override] 횡단보도 정지 로직
+        if self.crosswalk_state == "STOPPING":
+            elapsed = current_time - self.crosswalk_stop_start_time
+            if elapsed < self.crosswalk_stop_duration:
+                final_speed_mps = 0.0
+                rospy.loginfo_throttle(1.0, f"Crosswalk Stopping... ({elapsed:.1f}/{self.crosswalk_stop_duration}s)")
+            else:
+                self.crosswalk_state = "DONE"
+                rospy.loginfo("Crosswalk stop finished. Logic disabled permanently.")
+
+        # 4. PWM 변환
+        target_pwm = self._drive_speed_to_pwm(final_speed_mps)
         
         # target_pwm을 범위 내로 확실히 제한 (역회전 방지)
         target_pwm = self._clamp(target_pwm, self.min_pwm, self.max_pwm)
