@@ -539,7 +539,7 @@ class LaneFollower:
         
         # [Override] 횡단보도 정지 로직 (1초 대기 후 정지)
         if self.waiting_for_stop:
-            if (current_time - self.crosswalk_detected_time) >= 0.5:
+            if (current_time - self.crosswalk_detected_time) >= 1.0:
                 self.waiting_for_stop = False
                 self.is_crosswalk_stopping = True
                 self.crosswalk_stop_start_time = current_time
