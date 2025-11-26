@@ -187,8 +187,10 @@ class LidarAvoidancePlanner:
                                   self.camera_weight * camera_confidence)
                 if total_confidence > 0.5:  # 퓨전 신뢰도 임계값
                     # 카메라에서 추가로 감지한 장애물이 있으면 추가
-                    if len(camera_obstacles) > 0:
-                        obstacle_points = np.vstack([obstacle_points, camera_obstacles]) if len(obstacle_points) > 0 else camera_obstacles
+                    # 사용자 요청: 충돌 시 라이다 우선 -> 카메라 단독 감지 장애물은 무시 (라이다가 못 본 것은 없는 것으로 간주)
+                    pass
+                    # if len(camera_obstacles) > 0:
+                    #     obstacle_points = np.vstack([obstacle_points, camera_obstacles]) if len(obstacle_points) > 0 else camera_obstacles
         
         # 마커는 모든 포인트를 표시하되, 60cm 이내인 것만 빨간색으로 표시
         self._publish_obstacle_markers(scan.header, all_points, obstacle_points)

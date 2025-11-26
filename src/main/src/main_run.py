@@ -121,12 +121,9 @@ class LaneFollower:
         self.lidar_timeout = 0.5  # 0.5초 동안 라이다 제어가 없으면 카메라 제어 사용
         self.last_servo_publish_time = 0.0  # 자신이 발행한 시간 추적
 
-        self.enable_viz = rospy.get_param(
-            "~enable_viz",
-            bool(os.environ.get("DISPLAY"))
-        )
+        self.enable_viz = rospy.get_param("~enable_viz", True)
         if not self.enable_viz:
-            rospy.logwarn("DISPLAY not found. Visualization disabled.")
+            rospy.logwarn("Visualization disabled via parameter.")
 
         self.auto_threshold = rospy.get_param("~auto_threshold", not self.enable_viz)
         if self.auto_threshold:
@@ -177,8 +174,31 @@ class LaneFollower:
         self.current_speed_pwm = base_color_pwm
         self.last_detected_color = "none"
 
+        self.smoothed_servo = self.steering_offset
+        self.last_image_time = 0.0
+
+        # 제어 루프 타이머 (30Hz)
+        self.timer = rospy.Timer(rospy.Duration(0.033), self.timer_callback)
+
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
+
+    def timer_callback(self, event):
+        """주기적인 제어 명령 발행 (카메라 수신 여부와 무관하게 동작)"""
+        # 1. 속도 제어 (통합)
+        target_pwm = self._compute_integrated_speed()
+        self._publish_speed_command(target_pwm)
+
+        # 2. 조향 제어 (라이다 우선권 확인)
+        current_time = rospy.get_time()
+        is_lidar_controlling = (current_time - self.last_lidar_servo_time < self.lidar_timeout)
+
+        if not is_lidar_controlling:
+            # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
+            # 단, 카메라 데이터가 최신일 때만 (0.5초 이내)
+            if (current_time - self.last_image_time) < 0.5:
+                self.last_servo_publish_time = current_time
+                self._publish_servo_command(self.smoothed_servo)
 
     def image_callback(self, msg):
         try:
@@ -285,25 +305,9 @@ class LaneFollower:
             smoothing_factor * self.prev_servo
             + (1.0 - smoothing_factor) * limited_target
         )
+        self.smoothed_servo = smoothed_servo
         self.prev_servo = smoothed_servo
-
-        # 라이다 우선: lidar_avoidance가 제어 중인지 확인
-        # lidar_avoidance는 /ackermann_cmd를 발행하므로, 이를 확인하거나
-        # 간단히 타임아웃 기반으로 처리 (lidar_avoidance가 활성화되어 있으면 주기적으로 제어)
-        current_time = rospy.get_time()
-        is_lidar_controlling = (current_time - self.last_lidar_servo_time < self.lidar_timeout)
-        
-        # 속도는 항상 main_run.py에서 제어 (라이다 제어 중이어도)
-        # 라이다가 제어 중일 때는 조향만 라이다가 제어하고, 속도는 main_run.py가 제어
-        # 라이다에서 온 속도 명령과 카메라 기반 속도 중 더 안전한(느린) 속도 선택
-        target_speed_pwm = self._compute_integrated_speed()
-        self._publish_speed_command(target_speed_pwm)
-        
-        # 조향은 라이다가 제어 중이면 발행하지 않음
-        if not is_lidar_controlling:
-            # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
-            self.last_servo_publish_time = current_time
-            self._publish_servo_command(smoothed_servo)
+        self.last_image_time = rospy.get_time()
 
         if self.enable_viz:
             cv2.imshow("Lane Frame", frame)
