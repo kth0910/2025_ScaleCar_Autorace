@@ -86,9 +86,13 @@ class SlideWindow:
                 right_lane_inds_calc.extend(good_right_inds)
 
             if len(good_left_inds) > minpix:
-                leftx_current = int(np.mean(nonzerox[good_left_inds]))
+                new_leftx = int(np.mean(nonzerox[good_left_inds]))
+                # 윈도우 이동 시 급격한 변화를 막기 위해 스무딩 적용
+                leftx_current = int(leftx_current * 0.67 + new_leftx * 0.33)
+            
             if len(good_right_inds) > minpix:
-                rightx_current = int(np.mean(nonzerox[good_right_inds]))
+                new_rightx = int(np.mean(nonzerox[good_right_inds]))
+                rightx_current = int(rightx_current * 0.67 + new_rightx * 0.33)
 
         left_exists = len(left_lane_inds) > self.min_lane_pixels
         right_exists = len(right_lane_inds) > self.min_lane_pixels
