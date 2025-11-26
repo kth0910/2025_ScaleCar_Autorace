@@ -149,6 +149,7 @@ class LaneFollower:
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
         self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM (3000 ~ 0.65m/s)
         self.min_pwm = rospy.get_param("~min_pwm", 0.0)  # ERPM (0 = Stop)
+        self.min_moving_pwm = rospy.get_param("~min_moving_pwm", 900.0)  # ERPM (최소 구동 토크)
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         speed_pwm_param = rospy.get_param("~speed", 2000.0)
@@ -682,11 +683,18 @@ class LaneFollower:
             self.last_detected_color = new_color
 
     def _drive_speed_to_pwm(self, speed_mps: float) -> float:
+        if speed_mps < 0.01:
+            return 0.0
+            
         if self.max_drive_speed <= self.min_drive_speed:
-            return self.min_pwm
+            return self.min_moving_pwm
+            
+        # 유효 주행 속도 범위로 클램핑
         clamped_speed = self._clamp(speed_mps, self.min_drive_speed, self.max_drive_speed)
+        
+        # [min_drive, max_drive] -> [min_moving, max_pwm] 매핑
         normalized = (clamped_speed - self.min_drive_speed) / (self.max_drive_speed - self.min_drive_speed)
-        return self.min_pwm + normalized * (self.max_pwm - self.min_pwm)
+        return self.min_moving_pwm + normalized * (self.max_pwm - self.min_moving_pwm)
 
     def _pwm_to_drive_speed(self, pwm_value: float) -> float:
         if self.max_pwm <= self.min_pwm or self.max_drive_speed <= self.min_drive_speed:
