@@ -189,10 +189,11 @@ class LaneFollower:
         self.timer = rospy.Timer(rospy.Duration(0.033), self.timer_callback)
 
         # 횡단보도 감지 및 정지 관련 변수
+        self.crosswalk_enabled = True  # 로직 활성화 여부 (한 번만 실행)
+        self.waiting_for_stop = False  # 감지 후 1초 대기 상태
+        self.crosswalk_detected_time = 0.0
         self.is_crosswalk_stopping = False
         self.crosswalk_stop_start_time = 0.0
-        self.crosswalk_cooldown = 0.0
-        self.crosswalk_cooldown_duration = 10.0  # 10초 쿨다운
         self.crosswalk_stop_duration = 5.0       # 5초 정지
 
         rospy.on_shutdown(self._cleanup)
@@ -234,13 +235,14 @@ class LaneFollower:
             self._setup_trackbars()
             self.initialized = True
 
-        # 횡단보도 감지 (쿨다운 중이거나 이미 정지 중이면 스킵)
-        current_time = rospy.get_time()
-        if not self.is_crosswalk_stopping and (current_time - self.crosswalk_cooldown > self.crosswalk_cooldown_duration):
+        # 횡단보도 감지 (활성화 상태이고, 대기/정지 중이 아닐 때)
+        if self.crosswalk_enabled and not self.waiting_for_stop and not self.is_crosswalk_stopping:
              if self._detect_crosswalk(frame):
-                 self.is_crosswalk_stopping = True
-                 self.crosswalk_stop_start_time = current_time
-                 rospy.loginfo("Crosswalk detected! Initiating stop.")
+                 self.waiting_for_stop = True
+                 self.crosswalk_detected_time = rospy.get_time()
+                 # 감지 즉시 로직 비활성화 (한 번만 동작)
+                 self.crosswalk_enabled = False 
+                 rospy.loginfo("Crosswalk detected! Waiting 1s before stop.")
 
         lane_mask = self._create_lane_mask(frame)
         slide_img, center_x, has_lane = self._run_slidewindow(lane_mask)
@@ -535,16 +537,22 @@ class LaneFollower:
             rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
             final_speed_mps = self.current_color_speed_mps
         
-        # [Override] 횡단보도 정지 로직
+        # [Override] 횡단보도 정지 로직 (1초 대기 후 정지)
+        if self.waiting_for_stop:
+            if (current_time - self.crosswalk_detected_time) >= 1.0:
+                self.waiting_for_stop = False
+                self.is_crosswalk_stopping = True
+                self.crosswalk_stop_start_time = current_time
+                rospy.loginfo("1s delay passed. Stopping now.")
+        
         if self.is_crosswalk_stopping:
             elapsed = current_time - self.crosswalk_stop_start_time
             if elapsed < self.crosswalk_stop_duration:
                 final_speed_mps = 0.0
-                rospy.loginfo_throttle(1.0, f"Crosswalk detected! Stopping... ({elapsed:.1f}/{self.crosswalk_stop_duration}s)")
+                rospy.loginfo_throttle(1.0, f"Crosswalk Stopping... ({elapsed:.1f}/{self.crosswalk_stop_duration}s)")
             else:
                 self.is_crosswalk_stopping = False
-                self.crosswalk_cooldown = current_time
-                rospy.loginfo("Crosswalk stop finished. Resuming.")
+                rospy.loginfo("Crosswalk stop finished. Logic disabled permanently.")
 
         
         # 4. PWM 변환
