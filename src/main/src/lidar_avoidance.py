@@ -62,14 +62,6 @@ class LidarAvoidancePlanner:
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
 
-        # PID 제어 파라미터
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.2)
-        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.0)
-        self.pid_kd = rospy.get_param("~lidar_pid_kd", 0.5)
-        self.prev_error = 0.0
-        self.integral_error = 0.0
-        self.prev_time = rospy.get_time()
-
         # 카메라-라이다 퓨전 설정
         self.enable_camera_fusion = rospy.get_param("~enable_camera_fusion", True)
         self.camera_topic = rospy.get_param("~camera_topic", "/usb_cam/image_rect_color")
@@ -233,29 +225,9 @@ class LidarAvoidancePlanner:
         # 전방 30도 이내 장애물이 없으면 회피 기동 계속
         emergency_stop = False
 
-        # PID 제어 적용
-        current_time = rospy.get_time()
-        dt = current_time - self.prev_time
-        if dt <= 0:
-            dt = 0.033  # 기본값 30Hz
-        self.prev_time = current_time
-
-        error = target_angle
-        
-        # 적분항 (Integral)
-        self.integral_error += error * dt
-        # 적분항 제한 (Windup 방지)
-        self.integral_error = clamp(self.integral_error, -1.0, 1.0)
-        
-        # 미분항 (Derivative)
-        derivative = (error - self.prev_error) / dt
-        self.prev_error = error
-        
-        # PID 출력 계산
-        pid_output = (self.pid_kp * error) + (self.pid_ki * self.integral_error) + (self.pid_kd * derivative)
-        
         # 조향각 계산 (속도는 main_run.py에서 제어)
-        steering_angle = clamp(pid_output, -self.max_steering_angle, self.max_steering_angle)
+        # PID 제어 제거: target_angle은 에러가 아니라 목표 조향각임. 적분하면 발산함.
+        steering_angle = clamp(target_angle, -self.max_steering_angle, self.max_steering_angle)
         servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
 
