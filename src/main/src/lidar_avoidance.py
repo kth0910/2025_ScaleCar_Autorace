@@ -443,16 +443,22 @@ class LidarAvoidancePlanner:
         self, ranges: np.ndarray, angles: np.ndarray
     ) -> Tuple[Optional[float], float, float]:
         """
-        Follow-the-Gap Method (FGM) 구현
-        1. 가장 가까운 장애물 찾기
-        2. Safety Bubble 적용 (가장 가까운 장애물 주변을 0으로 마스킹)
-        3. 가장 넓은 Gap(빈 공간) 찾기
-        4. Gap의 중앙을 목표로 설정
+        Follow-the-Gap Method (FGM) 강화 버전
+        1. 전처리 (Smoothing)
+        2. Safety Bubble 적용
+        3. Max Gap 찾기
+        4. Goal Point 선택 (단순 중앙이 아닌, 더 깊은 곳으로 유도)
         """
         # 1. 전처리
         proc_ranges = np.array(ranges, copy=True)
         proc_ranges[np.isinf(proc_ranges)] = self.max_range
         proc_ranges[np.isnan(proc_ranges)] = 0.0
+        
+        # 노이즈 제거를 위한 Smoothing (Sliding Window)
+        # 5개 포인트 평균
+        kernel_size = 5
+        kernel = np.ones(kernel_size) / kernel_size
+        proc_ranges = np.convolve(proc_ranges, kernel, mode='same')
         
         # 2. Safety Bubble 적용
         # 가장 가까운 포인트 찾기
@@ -461,7 +467,7 @@ class LidarAvoidancePlanner:
         
         # Bubble 반경 (차폭 + 여유)
         # inflation_margin은 현재 0.3m로 설정됨
-        bubble_radius = self.inflation_margin + 0.1  # 조금 더 여유를 둠
+        bubble_radius = self.inflation_margin + 0.15  # 여유를 더 둠 (0.45m)
         
         if min_dist < self.max_range:
             angle_increment = angles[1] - angles[0] if len(angles) > 1 else 0.01
@@ -479,24 +485,23 @@ class LidarAvoidancePlanner:
             
         # 3. Max Gap 찾기
         # 주행 가능한 최소 거리 (Threshold)
-        gap_threshold = 1.0  # 1m 이상 열린 공간
+        gap_threshold = 1.2  # 1.2m 이상 열린 공간 (더 엄격하게)
         
         mask = proc_ranges > gap_threshold
         
         # Gap이 없으면 Threshold를 낮춰서 다시 시도 (Fallback)
         if not np.any(mask):
-            gap_threshold = 0.5
+            gap_threshold = 0.6
             mask = proc_ranges > gap_threshold
             
         # 연속된 True 구간(Gap) 찾기
-        # [False, True, True, False, ...] 형태에서 변화 지점 찾기
         padded_mask = np.concatenate(([False], mask, [False]))
         diff = np.diff(padded_mask.astype(int))
         starts = np.where(diff == 1)[0]
         ends = np.where(diff == -1)[0]
         
         if len(starts) == 0:
-            # 여전히 Gap이 없으면 가장 먼 곳으로 (단, 너무 가까우면 정지)
+            # 여전히 Gap이 없으면 가장 먼 곳으로
             max_idx = np.argmax(proc_ranges)
             if proc_ranges[max_idx] < 0.3:
                 return None, 0.0, 0.0
@@ -509,13 +514,27 @@ class LidarAvoidancePlanner:
         best_start = starts[best_gap_idx]
         best_end = ends[best_gap_idx]
         
-        # 4. Goal Point 선택 (Gap의 중앙)
-        best_idx = (best_start + best_end) // 2
+        # 4. Goal Point 선택 (강화된 로직)
+        # 단순히 중앙을 선택하는 것이 아니라, Gap 내에서 가장 깊은(멀리 있는) 지점을 향해 가중치를 둠
+        # 이는 장애물 구간 끝에서 탈출할 때 유리함
+        gap_indices = np.arange(best_start, best_end)
+        gap_ranges = proc_ranges[best_start:best_end]
+        
+        # Gap 내에서 가장 거리가 먼 지점 찾기 (Max Depth)
+        max_depth_idx_in_gap = np.argmax(gap_ranges)
+        max_depth_idx = best_start + max_depth_idx_in_gap
+        
+        # 중앙 인덱스
+        center_idx = (best_start + best_end) // 2
+        
+        # 최종 목표: 중앙과 가장 깊은 지점의 중간 지점 (안정성 + 탈출성)
+        # 장애물 구간 끝에서는 깊은 지점이 한쪽 끝에 쏠려 있을 가능성이 높음
+        best_idx = int((center_idx + max_depth_idx) / 2)
         
         target_angle = angles[best_idx]
         target_distance = proc_ranges[best_idx]
         
-        rospy.logdebug_throttle(0.5, "FGM: Gap [%d:%d], Target Angle %.1f deg", 
+        rospy.logdebug_throttle(0.5, "FGM Enhanced: Gap [%d:%d], Target Angle %.1f deg", 
                                best_start, best_end, math.degrees(target_angle))
         
         return target_angle, target_distance, 1.0
