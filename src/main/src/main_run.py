@@ -581,9 +581,9 @@ class LaneFollower:
         red_upper2 = np.array([180, 255, 255])
         red_mask = cv2.inRange(hsv, red_lower1, red_upper1) | cv2.inRange(hsv, red_lower2, red_upper2)
         
-        # 2. 파란색
-        blue_lower = np.array([100, 50, 50])
-        blue_upper = np.array([130, 255, 255])
+        # 2. 파란색 (범위 확장: Hue 90~140, Sat 40~255, Val 40~255)
+        blue_lower = np.array([90, 40, 40])
+        blue_upper = np.array([140, 255, 255])
         blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
         
         # 3. 흰색 (낮은 채도, 높은 명도)
