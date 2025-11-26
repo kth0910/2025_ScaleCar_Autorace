@@ -126,9 +126,6 @@ class LidarAvoidancePlanner:
         self.clearance_pub = rospy.Publisher(
             "lidar_avoidance/closest_obstacle", Float64, queue_size=1
         )
-        self.speed_command_pub = rospy.Publisher(
-            "lidar_avoidance/target_speed", Float64, queue_size=1
-        )
         self.steering_command_pub = rospy.Publisher(
             "lidar_avoidance/steering_cmd", Float64, queue_size=1
         )
@@ -159,21 +156,13 @@ class LidarAvoidancePlanner:
         hard_stop_distance = 0.15  # 15cm
         speed_reduction_start = 0.30  # 30cm
         
-        target_speed = self.max_drive_speed
-        
         if closest <= hard_stop_distance:
             # 15cm 이하는 완전 정지
             rospy.logwarn_throttle(1.0, "Obstacle too close (%.2fm <= %.2fm). Emergency stop.", closest, hard_stop_distance)
             self._publish_stop(scan.header, reason="too_close")
-            target_speed = 0.0
         elif closest < speed_reduction_start:
-            # 15cm ~ 30cm: 선형 감속
+            # 15cm ~ 30cm: 감속 경고만 (속도 제어는 main_run.py에서 수행)
             rospy.logwarn_throttle(1.0, "Obstacle very close (%.2fm). Speed reduction active.", closest)
-            ratio = (closest - hard_stop_distance) / (speed_reduction_start - hard_stop_distance)
-            target_speed = self.max_drive_speed * ratio
-            
-        # 속도 명령 발행 (m/s)
-        self.speed_command_pub.publish(Float64(target_speed))
 
         # 카메라 퓨전 적용
         # obstacle_points: 회피 로직용 (60cm 이내만)

@@ -155,10 +155,10 @@ class LaneFollower:
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
         self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
 
-        # 라이다 속도 명령 구독 (통합 제어용)
-        self.lidar_target_speed = self.max_drive_speed  # 초기값은 최대 속도
-        self.last_lidar_command_time = 0.0
-        rospy.Subscriber("lidar_avoidance/target_speed", Float64, self._lidar_speed_callback, queue_size=1)
+        # 라이다 장애물 거리 구독 (속도 제어용)
+        self.closest_obstacle = None
+        self.last_obstacle_time = 0.0
+        rospy.Subscriber("lidar_avoidance/closest_obstacle", Float64, self._obstacle_distance_callback, queue_size=1)
         
         # 라이다 조향 명령 구독 (장애물 회피용)
         self.lidar_steering_cmd = self.steering_offset
@@ -180,6 +180,7 @@ class LaneFollower:
         self.speed_value = base_color_pwm
         self.current_speed_pwm = base_color_pwm
         self.last_detected_color = "none"
+        self.current_detected_color = "none"
 
         self.smoothed_servo = self.steering_offset
         self.last_image_time = 0.0
@@ -196,15 +197,22 @@ class LaneFollower:
         target_pwm = self._compute_integrated_speed()
         self._publish_speed_command(target_pwm)
 
-        # 2. 조향 제어 (라이다 우선권 확인)
+        # 2. 조향 제어 (우선순위 로직 수정)
         current_time = rospy.get_time()
         
-        # 라이다 조향 명령이 최근(0.5초 이내)에 있었으면 라이다 우선
-        if (current_time - self.last_lidar_steering_time) < 0.5:
+        use_lidar_steering = False
+        
+        # 검정색(Black) 구간일 때만 라이다 회피 기동 우선
+        if self.current_detected_color == "black":
+            # 라이다 조향 명령이 최근(0.5초 이내)에 있었으면 라이다 우선
+            if (current_time - self.last_lidar_steering_time) < 0.5:
+                use_lidar_steering = True
+        
+        if use_lidar_steering:
             self.last_servo_publish_time = current_time
             self._publish_servo_command(self.lidar_steering_cmd)
         else:
-            # 라이다가 제어하지 않을 때만 카메라 차선 추종 제어 발행
+            # 그 외 색상(Red, Blue, White, None)이거나 라이다 명령이 없으면 카메라 차선 추종
             # 단, 카메라 데이터가 최신일 때만 (0.5초 이내)
             if (current_time - self.last_image_time) < 0.5:
                 self.last_servo_publish_time = current_time
@@ -240,6 +248,7 @@ class LaneFollower:
         
         # ROI 색상 검출 및 시각화 (빨강/파랑/검정/흰색)
         detected_color = self._process_and_publish_roi(frame)
+        self.current_detected_color = detected_color
         self._update_speed_profile_from_color(detected_color)
 
         left_exists = getattr(self.slidewindow, "left_exists", False)
@@ -468,11 +477,10 @@ class LaneFollower:
         self.last_lidar_servo_time = rospy.get_time()
         self.lidar_controlling = True
     
-    def _lidar_speed_callback(self, msg):
-        """라이다에서 계산된 목표 속도 수신"""
-        self.lidar_target_speed = msg.data
-        self.last_lidar_command_time = rospy.get_time()
-        # 속도 명령만 수신하고 조향 권한은 양보하지 않음 (차선 추종 유지)
+    def _obstacle_distance_callback(self, msg):
+        """라이다에서 가장 가까운 장애물 거리 수신"""
+        self.closest_obstacle = msg.data
+        self.last_obstacle_time = rospy.get_time()
         
     def _lidar_steering_callback(self, msg):
         """라이다에서 계산된 조향 명령 수신 (장애물 회피 시에만 들어옴)"""
@@ -490,13 +498,26 @@ class LaneFollower:
             self.current_color_speed_mps, self.min_drive_speed, self.max_drive_speed
         )
         
-        # 2. 라이다 기반 속도 명령 확인 (타임아웃 체크)
-        lidar_speed_mps = self.max_drive_speed
-        if (current_time - self.last_lidar_command_time) < 0.5:
-            lidar_speed_mps = self.lidar_target_speed
+        # 2. 라이다 장애물 거리 기반 안전 속도 계산
+        lidar_safe_speed_mps = self.max_drive_speed
+        
+        if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
+            closest = self.closest_obstacle
+            
+            # 거리 기반 속도 감소: 30cm부터 점진적으로 감소, 15cm에서 완전 정지
+            if closest <= self.hard_stop_distance:
+                # 15cm 이하는 완전 정지
+                lidar_safe_speed_mps = 0.0
+            elif closest < self.speed_reduction_start:
+                # 15cm ~ 30cm 구간에서 선형 감소
+                reduction_range = self.speed_reduction_start - self.hard_stop_distance
+                if reduction_range > 0:
+                    distance_in_range = closest - self.hard_stop_distance
+                    ratio = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
+                    lidar_safe_speed_mps = self.max_drive_speed * ratio
             
         # 3. 통합: 가장 보수적인(느린) 속도 선택
-        final_speed_mps = min(camera_speed_mps, lidar_speed_mps)
+        final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
         # 4. PWM 변환
         target_pwm = self._drive_speed_to_pwm(final_speed_mps)
@@ -632,10 +653,7 @@ class LaneFollower:
         if self.enable_viz:
             cv2.imshow("ROI Colors", debug_roi)
             
-        # 기존 로직과의 호환성을 위해 red/blue만 반환 (속도 제어용)
-        if detected in ["red", "blue"]:
-            return detected
-        return None
+        return detected
 
     def _update_speed_profile_from_color(self, detected_color):
         if detected_color == "red":
