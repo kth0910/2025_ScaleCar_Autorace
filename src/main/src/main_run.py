@@ -67,7 +67,7 @@ class LaneFollower:
         self.yellow_kernel_size = rospy.get_param("~yellow_kernel_size", 5)
 
         # 출력 토픽 (기본: 보간기 입력 토픽으로 발행해 단일 퍼블리셔로 정리)
-        self.use_unsmoothed_topics = rospy.get_param("~use_unsmoothed_topics", False)
+        self.use_unsmoothed_topics = rospy.get_param("~use_unsmoothed_topics", True)
         default_speed_topic = (
             "/commands/motor/unsmoothed_speed"
             if self.use_unsmoothed_topics
