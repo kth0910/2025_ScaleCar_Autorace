@@ -170,12 +170,12 @@ class LidarAvoidancePlanner:
         # (속도 감속은 main_run.py에서 수행하지만, 조향은 여기서 계산해야 함)
         speed_reduction_start = 1.0  # 1m
         
-        # 항상 장애물 회피 경로 계산 (거리에 상관없이 최적의 경로 찾기)
+        # 항상 장애물 회피 경로 계산 (FGM 알고리즘 적용)
         (
             target_angle,
             target_distance,
             selected_score,
-        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_points)
+        ) = self._select_target(ranges, angles)
         
         if target_angle is None:
             # 전방에 경로가 없을 때
@@ -440,102 +440,85 @@ class LidarAvoidancePlanner:
     # image_callback, camera_info_callback, _project_lidar_to_camera, _detect_camera_obstacles 제거
 
     def _select_target(
-        self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False,
-        obstacle_points: Optional[np.ndarray] = None
+        self, ranges: np.ndarray, angles: np.ndarray
     ) -> Tuple[Optional[float], float, float]:
         """
-        장애물 마커(obstacle_points)를 기반으로 최적의 경로를 선택하는 로직.
-        반경 1m 내의 장애물 밀도를 평가하고, 10cm 이내 접근 시 강력한 페널티를 부여하여
-        장애물 밀도가 낮은 곳으로 주행하도록 유도함.
+        Follow-the-Gap Method (FGM) 구현
+        1. 가장 가까운 장애물 찾기
+        2. Safety Bubble 적용 (가장 가까운 장애물 주변을 0으로 마스킹)
+        3. 가장 넓은 Gap(빈 공간) 찾기
+        4. Gap의 중앙을 목표로 설정
         """
-        # 후보 경로 생성 (정밀도를 위해 샘플 수 증가: 50)
-        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 50)
+        # 1. 전처리
+        proc_ranges = np.array(ranges, copy=True)
+        proc_ranges[np.isinf(proc_ranges)] = self.max_range
+        proc_ranges[np.isnan(proc_ranges)] = 0.0
         
-        best_score = -float('inf')
-        best_angle = 0.0
-        best_dist = 0.0
-        found_valid_path = False
-
-        # 장애물이 없으면 직진
-        if obstacle_points is None or len(obstacle_points) == 0:
-            return 0.0, self.lookahead_distance, 1.0
-
-        # 벡터화 연산을 위한 준비
-        ox = obstacle_points[:, 0]
-        oy = obstacle_points[:, 1]
+        # 2. Safety Bubble 적용
+        # 가장 가까운 포인트 찾기
+        min_idx = np.argmin(proc_ranges)
+        min_dist = proc_ranges[min_idx]
         
-        # 사용자 요청: 반경 1m 내에서 탐색
-        check_distance = 1.0
-
-        for angle in candidate_angles:
-            # 경로 벡터 (단위 벡터)
-            path_x = math.cos(angle)
-            path_y = math.sin(angle)
-            
-            # 1. 경로상 투영 거리 (전방 거리)
-            dots = ox * path_x + oy * path_y
-            
-            # 2. 경로 수직 거리 (측면 거리)
-            crosses = np.abs(path_x * oy - path_y * ox)
-            
-            # 유효한 장애물 필터링: 전방에 있고(dots > 0), 1m 이내에 있는 것(check_distance)
-            valid_mask = (dots > 0) & (dots < check_distance)
-            
-            # 충돌 여부 확인 (차폭 이내)
-            collision_mask = valid_mask & (crosses < self.inflation_margin)
-            
-            if np.any(collision_mask):
-                # 충돌 발생: 가장 가까운 충돌 지점까지의 거리
-                min_dist = np.min(dots[collision_mask])
-                # 충돌 경로는 매우 낮은 점수 (-10000)
-                score = -10000.0 + min_dist
-            else:
-                # 충돌 없음
-                min_dist = check_distance
-                
-                # 1. 근접 페널티 (10cm 이내 접근 시 대폭 강화)
-                # inflation_margin + 10cm 이내의 장애물에 대해 강력한 페널티 부여
-                danger_threshold = self.inflation_margin + 0.10
-                danger_mask = valid_mask & (crosses < danger_threshold)
-                
-                proximity_penalty = 0.0
-                if np.any(danger_mask):
-                    # 차폭 경계로부터의 거리 (0 ~ 0.1m)
-                    dists_from_edge = crosses[danger_mask] - self.inflation_margin
-                    # 거리가 가까울수록 페널티가 기하급수적으로 증가
-                    # 100.0 가중치로 대폭 강화 (충돌 직전 상황 회피)
-                    proximity_penalty = np.sum(100.0 / (dists_from_edge + 0.01))
-                
-                # 2. 밀도 페널티 (주변 장애물 개수)
-                # 차폭보다 조금 더 넓은 범위(예: 차폭 + 40cm) 내의 장애물 개수를 세어 밀도가 낮은 곳 선호
-                density_threshold = self.inflation_margin + 0.40
-                density_mask = valid_mask & (crosses < density_threshold)
-                density_count = np.sum(density_mask)
-                
-                # 점수 계산
-                # - 주행 가능 거리 (클수록 좋음)
-                # - 조향 각도 (작을수록 좋음 - 직진 선호)
-                # - 근접 페널티 (작을수록 좋음 - 매우 큼)
-                # - 밀도 (작을수록 좋음 - 장애물 적은 곳 선호)
-                score = (5.0 * min_dist) \
-                        - (self.heading_weight * abs(angle)) \
-                        - (1.0 * proximity_penalty) \
-                        - (0.5 * density_count)
-                
-                found_valid_path = True
-
-            if score > best_score:
-                best_score = score
-                best_angle = angle
-                best_dist = min_dist
+        # Bubble 반경 (차폭 + 여유)
+        # inflation_margin은 현재 0.3m로 설정됨
+        bubble_radius = self.inflation_margin + 0.1  # 조금 더 여유를 둠
         
-        if not found_valid_path and best_score < -5000:
-             # 모든 경로가 충돌 위험
-             pass
-
-        rospy.logdebug_throttle(0.5, "Best Angle: %.2f deg, Score: %.2f", math.degrees(best_angle), best_score)
+        if min_dist < self.max_range:
+            angle_increment = angles[1] - angles[0] if len(angles) > 1 else 0.01
+            # Bubble이 차지하는 각도 범위 계산
+            if min_dist < 0.01: min_dist = 0.01
+            bubble_angle = math.atan2(bubble_radius, min_dist)
+            bubble_idx_half = int(bubble_angle / angle_increment)
+            
+            # 인덱스 범위 클램핑
+            start_idx = max(0, min_idx - bubble_idx_half)
+            end_idx = min(len(proc_ranges), min_idx + bubble_idx_half + 1)
+            
+            # Bubble 영역을 0으로 설정 (장애물로 간주하여 Gap에서 제외)
+            proc_ranges[start_idx:end_idx] = 0.0
+            
+        # 3. Max Gap 찾기
+        # 주행 가능한 최소 거리 (Threshold)
+        gap_threshold = 1.0  # 1m 이상 열린 공간
         
-        return best_angle, best_dist, best_score
+        mask = proc_ranges > gap_threshold
+        
+        # Gap이 없으면 Threshold를 낮춰서 다시 시도 (Fallback)
+        if not np.any(mask):
+            gap_threshold = 0.5
+            mask = proc_ranges > gap_threshold
+            
+        # 연속된 True 구간(Gap) 찾기
+        # [False, True, True, False, ...] 형태에서 변화 지점 찾기
+        padded_mask = np.concatenate(([False], mask, [False]))
+        diff = np.diff(padded_mask.astype(int))
+        starts = np.where(diff == 1)[0]
+        ends = np.where(diff == -1)[0]
+        
+        if len(starts) == 0:
+            # 여전히 Gap이 없으면 가장 먼 곳으로 (단, 너무 가까우면 정지)
+            max_idx = np.argmax(proc_ranges)
+            if proc_ranges[max_idx] < 0.3:
+                return None, 0.0, 0.0
+            return angles[max_idx], proc_ranges[max_idx], 0.5
+            
+        # 가장 긴 Gap 선택
+        gap_lengths = ends - starts
+        best_gap_idx = np.argmax(gap_lengths)
+        
+        best_start = starts[best_gap_idx]
+        best_end = ends[best_gap_idx]
+        
+        # 4. Goal Point 선택 (Gap의 중앙)
+        best_idx = (best_start + best_end) // 2
+        
+        target_angle = angles[best_idx]
+        target_distance = proc_ranges[best_idx]
+        
+        rospy.logdebug_throttle(0.5, "FGM: Gap [%d:%d], Target Angle %.1f deg", 
+                               best_start, best_end, math.degrees(target_angle))
+        
+        return target_angle, target_distance, 1.0
 
     # 속도 제어는 main_run.py에서 담당하므로 제거됨
 
