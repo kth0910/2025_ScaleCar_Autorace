@@ -40,7 +40,6 @@ class LaneFollower:
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
         self.min_servo = rospy.get_param("~min_servo", 0.05)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
-        self.speed_value = rospy.get_param("~speed", 2000.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
         self.max_center_step = rospy.get_param("~max_center_step", 25.0)
         self.bias_correction_gain = rospy.get_param("~bias_correction_gain", 1e-4)
@@ -137,15 +136,32 @@ class LaneFollower:
         rospy.Subscriber("lidar_avoidance/closest_obstacle", Float64, self._obstacle_distance_callback, queue_size=1)
         
         # 속도 제어 파라미터
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.4)  # m/s
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
         self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
         self.min_pwm = rospy.get_param("~min_pwm", 900.0)
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.20)  # 20cm에서 완전 정지
-        self.current_speed_pwm = self.max_pwm
+        speed_pwm_param = rospy.get_param("~speed", 2000.0)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
         self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
+        # 색상 기반 속도 제어 파라미터
+        self.neutral_lane_speed = rospy.get_param(
+            "~neutral_lane_speed",
+            self._pwm_to_drive_speed(speed_pwm_param)
+        )
+        self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
+        self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.6)
+        self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.25)
+        self.color_roi_width_ratio = rospy.get_param("~color_roi_width_ratio", 0.45)
+        self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.04)
+        self.current_color_speed_mps = self._clamp(
+            self.neutral_lane_speed, self.min_drive_speed, self.max_drive_speed
+        )
+        base_color_pwm = self._drive_speed_to_pwm(self.current_color_speed_mps)
+        self.speed_value = base_color_pwm
+        self.current_speed_pwm = base_color_pwm
+        self.last_detected_color = "none"
 
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
@@ -176,6 +192,8 @@ class LaneFollower:
             filtered_center = self.prev_center
         self.prev_center = filtered_center
         self.current_center = filtered_center
+        detected_color = self._detect_bottom_lane_color(frame)
+        self._update_speed_profile_from_color(detected_color)
 
         left_exists = getattr(self.slidewindow, "left_exists", False)
         right_exists = getattr(self.slidewindow, "right_exists", False)
@@ -397,7 +415,10 @@ class LaneFollower:
         self.prev_time = current_time  # 시간 업데이트
         
         # 기본 속도 (PWM) - 범위 제한 (역회전 방지)
-        base_pwm = self._clamp(self.speed_value, self.min_pwm, self.max_pwm)
+        base_speed_mps = self._clamp(
+            self.current_color_speed_mps, self.min_drive_speed, self.max_drive_speed
+        )
+        base_pwm = self._drive_speed_to_pwm(base_speed_mps)
         
         # 장애물이 감지되면 속도 감소
         if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
@@ -454,6 +475,104 @@ class LaneFollower:
         self.current_speed_pwm = self._clamp(smoothed_pwm, self.min_pwm, self.max_pwm)
         
         return self.current_speed_pwm
+
+    def _detect_bottom_lane_color(self, frame):
+        if frame is None or frame.size == 0:
+            return None
+
+        h, w = frame.shape[:2]
+        roi_top = max(0, int((1.0 - self.color_roi_height_ratio) * h))
+        roi_bottom = h
+
+        lane_width_px = getattr(self.slidewindow, "lane_width_px", None)
+        if lane_width_px is None or lane_width_px <= 0:
+            roi_width = int(self.color_roi_width_ratio * w)
+        else:
+            roi_width = int(lane_width_px * 0.6)
+        roi_width = int(self._clamp(roi_width, 10, w))
+
+        center_x = self.current_center
+        if center_x is None or not math.isfinite(center_x):
+            center_x = w / 2.0
+        half_width = roi_width // 2
+        roi_left = int(np.clip(center_x - half_width, 0, w - roi_width))
+        roi_right = roi_left + roi_width
+        # 하단 차선 사이 ROI에서 색상 검출
+        roi = frame[roi_top:roi_bottom, roi_left:roi_right]
+        if roi.size == 0:
+            return None
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        red_lower1 = np.array([0, 80, 80])
+        red_upper1 = np.array([10, 255, 255])
+        red_lower2 = np.array([160, 80, 80])
+        red_upper2 = np.array([180, 255, 255])
+        blue_lower = np.array([90, 80, 80])
+        blue_upper = np.array([130, 255, 255])
+
+        red_mask = cv2.inRange(hsv, red_lower1, red_upper1)
+        red_mask = cv2.bitwise_or(red_mask, cv2.inRange(hsv, red_lower2, red_upper2))
+        blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+
+        kernel = np.ones((3, 3), np.uint8)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        roi_area = roi.shape[0] * roi.shape[1]
+        if roi_area == 0:
+            return None
+        detection_ratio = self._clamp(self.color_detection_ratio, 0.0, 1.0)
+        pixel_threshold = max(1, int(roi_area * detection_ratio))
+
+        red_pixels = cv2.countNonZero(red_mask)
+        blue_pixels = cv2.countNonZero(blue_mask)
+
+        candidates = []
+        if red_pixels >= pixel_threshold:
+            candidates.append(("red", red_pixels))
+        if blue_pixels >= pixel_threshold:
+            candidates.append(("blue", blue_pixels))
+
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[1])[0]
+
+    def _update_speed_profile_from_color(self, detected_color):
+        if detected_color == "red":
+            target_speed = self.red_lane_speed
+        elif detected_color == "blue":
+            target_speed = self.blue_lane_speed
+        else:
+            target_speed = self.neutral_lane_speed
+
+        target_speed = self._clamp(target_speed, self.min_drive_speed, self.max_drive_speed)
+        if abs(target_speed - self.current_color_speed_mps) < 1e-3:
+            return
+
+        self.current_color_speed_mps = target_speed
+        new_pwm = self._drive_speed_to_pwm(target_speed)
+        self.speed_value = new_pwm
+        if self.current_speed_pwm is None:
+            self.current_speed_pwm = new_pwm
+
+        new_color = detected_color or "none"
+        if new_color != self.last_detected_color:
+            rospy.loginfo(f"Lane color detected: {new_color} -> {target_speed:.2f} m/s")
+            self.last_detected_color = new_color
+
+    def _drive_speed_to_pwm(self, speed_mps: float) -> float:
+        if self.max_drive_speed <= self.min_drive_speed:
+            return self.min_pwm
+        clamped_speed = self._clamp(speed_mps, self.min_drive_speed, self.max_drive_speed)
+        normalized = (clamped_speed - self.min_drive_speed) / (self.max_drive_speed - self.min_drive_speed)
+        return self.min_pwm + normalized * (self.max_pwm - self.min_pwm)
+
+    def _pwm_to_drive_speed(self, pwm_value: float) -> float:
+        if self.max_pwm <= self.min_pwm or self.max_drive_speed <= self.min_drive_speed:
+            return self.min_drive_speed
+        pwm_value = self._clamp(pwm_value, self.min_pwm, self.max_pwm)
+        normalized = (pwm_value - self.min_pwm) / (self.max_pwm - self.min_pwm)
+        return self.min_drive_speed + normalized * (self.max_drive_speed - self.min_drive_speed)
 
     def _publish_speed_command(self, value: float) -> None:
         msg = Float64(value)
