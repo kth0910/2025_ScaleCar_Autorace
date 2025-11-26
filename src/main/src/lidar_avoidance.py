@@ -319,19 +319,18 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: [검증 1] 검출 조건 단순화 - 전방 60도(±30도), 0.5m 이내 무조건 인식
-        # 복잡한 Corridor 로직 제거하고 확실하게 잡히도록 변경
+        # 3단계: [검증 1] 검출 조건 단순화 - 전방 160도(±80도), 0.8m 이내 무조건 인식
+        # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지
         
-        # 3-1. 전방 각도 필터링 (±30도)
-        # self.front_obstacle_angle 대신 더 넓은 고정 각도 사용
-        check_fov = math.radians(60.0) 
+        # 3-1. 전방 각도 필터링 (±80도)
+        check_fov = math.radians(160.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
         angle_mask = np.abs(angles) <= half_fov
         
-        # 3-2. 거리 필터링 (0.5m)
-        obstacle_detection_range = 0.50
+        # 3-2. 거리 필터링 (0.8m)
+        obstacle_detection_range = 0.80
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
@@ -342,7 +341,7 @@ class LidarAvoidancePlanner:
         front_count = len(obstacle_points)
         
         if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found (Front 60deg, < %.2fm)", obstacle_detection_range)
+            rospy.logdebug_throttle(2.0, "No obstacle points found (Front 160deg, < %.2fm)", obstacle_detection_range)
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[obstacle_mask]))
@@ -680,21 +679,14 @@ class LidarAvoidancePlanner:
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 0.45  # 45cm
+            obstacle_detection_range = 0.80  # 0.8m
             
-            # 현재 조향각 기준 ±40도 필터링 (Corridor)
-            current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
-            corridor_width_rad = math.radians(40.0)
-            angle_diff = np.abs(all_angles - current_steering_angle)
-            corridor_mask = angle_diff <= corridor_width_rad
-            
-            # 전방 고정(Static) 필터링
-            static_front_width_rad = math.radians(25.0)
-            static_front_mask = np.abs(all_angles) <= static_front_width_rad
+            # 전방 160도(±80도) 필터링
+            front_angle_limit = math.radians(160.0) * 0.5
+            angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
             dist_mask = all_distances < obstacle_detection_range
-            angle_mask = corridor_mask | static_front_mask
             
             close_mask = dist_mask & angle_mask
             
