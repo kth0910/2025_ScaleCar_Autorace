@@ -35,7 +35,7 @@ class LidarAvoidancePlanner:
         self.max_range = rospy.get_param("~max_range", 8.0)
         self.safe_distance = rospy.get_param("~safe_distance", 0.35)  # 35cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.20)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
@@ -75,31 +75,10 @@ class LidarAvoidancePlanner:
         self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.7)  # 0.0~1.0 (클수록 관성 큼)
         self.prev_servo_cmd = self.servo_center
 
-        # 카메라-라이다 퓨전 설정
-        self.enable_camera_fusion = rospy.get_param("~enable_camera_fusion", True)
-        self.camera_topic = rospy.get_param("~camera_topic", "/usb_cam/image_rect_color")
-        self.camera_info_topic = rospy.get_param("~camera_info_topic", "/usb_cam/camera_info")
-        self.lidar_frame = rospy.get_param("~lidar_frame", "laser")
-        self.camera_frame = rospy.get_param("~camera_frame", "usb_cam")
-        self.lidar_weight = rospy.get_param("~lidar_weight", 0.7)  # 라이다 신뢰도 가중치
-        self.camera_weight = rospy.get_param("~camera_weight", 0.3)  # 카메라 신뢰도 가중치
+        # 카메라-라이다 퓨전 설정 (제거됨)
+        self.enable_camera_fusion = False
         
-        # 카메라 장애물 감지 설정
-        self.camera_obstacle_threshold = rospy.get_param("~camera_obstacle_threshold", 0.3)  # 이미지에서 장애물로 판단할 임계값
-        self.camera_roi_bottom = rospy.get_param("~camera_roi_bottom", 0.5)  # 이미지 하단 ROI 비율
-        self.camera_roi_top = rospy.get_param("~camera_roi_top", 0.8)  # 이미지 상단 ROI 비율
-        
-        # 카메라 관련 초기화
-        if self.enable_camera_fusion:
-            self.bridge = CvBridge()
-            self.tf_buffer = Buffer()
-            self.tf_listener = TransformListener(self.tf_buffer)
-            self.camera_matrix = None
-            self.dist_coeffs = None
-            self.camera_info_received = False
-            self.latest_image = None
-            self.latest_image_time = 0.0
-            self.image_timeout = 0.5  # 0.5초 타임아웃
+        # ROS I/O
 
         # ROS I/O
         rospy.Subscriber(
@@ -108,19 +87,7 @@ class LidarAvoidancePlanner:
             self.scan_callback,
             queue_size=1,
         )
-        if self.enable_camera_fusion:
-            rospy.Subscriber(
-                self.camera_topic,
-                Image,
-                self.image_callback,
-                queue_size=1,
-            )
-            rospy.Subscriber(
-                self.camera_info_topic,
-                CameraInfo,
-                self.camera_info_callback,
-                queue_size=1,
-            )
+        # 카메라 구독 제거됨
         # 속도 제어는 main_run.py에서 담당하므로 제거
         # 조향만 제어
         self.steering_pub = None
@@ -177,19 +144,6 @@ class LidarAvoidancePlanner:
         # obstacle_points: 회피 로직용 (60cm 이내만)
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일)
         obstacle_points, all_points, lidar_confidence = self._collect_obstacle_points(ranges, angles, scan.header)
-        camera_confidence = 0.0
-        if self.enable_camera_fusion and self.camera_info_received and self.latest_image is not None:
-            camera_obstacles, camera_confidence = self._detect_camera_obstacles(
-                obstacle_points, scan.header
-            )
-            # 신뢰도 기반 퓨전
-            if camera_confidence > 0.0 or lidar_confidence > 0.0:
-                total_confidence = (self.lidar_weight * lidar_confidence + 
-                                  self.camera_weight * camera_confidence)
-                if total_confidence > 0.5:  # 퓨전 신뢰도 임계값
-                    # 카메라에서 추가로 감지한 장애물이 있으면 추가
-                    # 사용자 요청: 충돌 시 라이다 우선 -> 카메라 단독 감지 장애물은 무시 (라이다가 못 본 것은 없는 것으로 간주)
-                    pass
                     # if len(camera_obstacles) > 0:
                     #     obstacle_points = np.vstack([obstacle_points, camera_obstacles]) if len(obstacle_points) > 0 else camera_obstacles
         
@@ -322,21 +276,7 @@ class LidarAvoidancePlanner:
             ranges = np.convolve(ranges, kernel, mode="same")
         return ranges, angles
 
-    def image_callback(self, msg: Image) -> None:
-        """카메라 이미지 콜백"""
-        try:
-            self.latest_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-            self.latest_image_time = rospy.get_time()
-        except Exception as exc:
-            rospy.logwarn_throttle(1.0, f"Failed to convert camera image: {exc}")
-
-    def camera_info_callback(self, msg: CameraInfo) -> None:
-        """카메라 캘리브레이션 정보 콜백"""
-        if not self.camera_info_received:
-            self.camera_matrix = np.array(msg.K, dtype=np.float64).reshape(3, 3)
-            self.dist_coeffs = np.array(msg.D, dtype=np.float64)
-            self.camera_info_received = True
-            rospy.loginfo("Camera calibration info received")
+    # image_callback, camera_info_callback 제거됨
 
     def _collect_obstacle_points(
         self, ranges: np.ndarray, angles: np.ndarray, header=None
@@ -496,170 +436,8 @@ class LidarAvoidancePlanner:
         obstacle_count = np.sum(obstacle_mask)
         return obstacle_count >= self.min_obstacle_points
 
-    def _project_lidar_to_camera(self, lidar_points: np.ndarray, header) -> Optional[np.ndarray]:
-        """
-        라이다 포인트를 카메라 이미지 평면에 투영.
-        Returns: (N, 2) 형태의 이미지 픽셀 좌표 배열, None if failed
-        """
-        if not self.camera_info_received or self.latest_image is None:
-            return None
-        
-        try:
-            # 라이다 좌표계를 카메라 좌표계로 변환
-            transform = self.tf_buffer.lookup_transform(
-                self.camera_frame,
-                self.lidar_frame,
-                header.stamp,
-                rospy.Duration(0.1)
-            )
-            
-            # 변환 행렬 구성
-            t = transform.transform.translation
-            q = transform.transform.rotation
-            # 쿼터니언을 회전 행렬로 변환
-            qx, qy, qz, qw = q.x, q.y, q.z, q.w
-            R = np.array([
-                [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
-                [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
-                [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
-            ])
-            T = np.array([t.x, t.y, t.z])
-            
-            # 라이다 포인트를 카메라 좌표계로 변환
-            # lidar_points는 (N, 2) 형태 [x, y], z=0 가정
-            if len(lidar_points) == 0:
-                return None
-            
-            lidar_3d = np.zeros((len(lidar_points), 3))
-            lidar_3d[:, 0] = lidar_points[:, 0]  # x
-            lidar_3d[:, 1] = lidar_points[:, 1]  # y
-            lidar_3d[:, 2] = 0.0  # z (지면 높이)
-            
-            # 좌표 변환
-            camera_points = (R @ lidar_3d.T).T + T
-            
-            # 카메라 앞쪽(z > 0)인 포인트만 선택
-            valid = camera_points[:, 2] > 0.1
-            if not np.any(valid):
-                return None
-            
-            camera_points = camera_points[valid]
-            
-            # 카메라 내부 파라미터로 이미지 평면에 투영
-            fx = self.camera_matrix[0, 0]
-            fy = self.camera_matrix[1, 1]
-            cx = self.camera_matrix[0, 2]
-            cy = self.camera_matrix[1, 2]
-            
-            # 정규화된 좌표
-            x_norm = camera_points[:, 0] / camera_points[:, 2]
-            y_norm = camera_points[:, 1] / camera_points[:, 2]
-            
-            # 이미지 픽셀 좌표
-            u = fx * x_norm + cx
-            v = fy * y_norm + cy
-            
-            image_points = np.stack([u, v], axis=1)
-            
-            # 이미지 범위 내 포인트만 반환
-            h, w = self.latest_image.shape[:2]
-            in_bounds = (image_points[:, 0] >= 0) & (image_points[:, 0] < w) & \
-                       (image_points[:, 1] >= 0) & (image_points[:, 1] < h)
-            
-            if not np.any(in_bounds):
-                return None
-            
-            return image_points[in_bounds]
-            
-        except Exception as exc:
-            rospy.logwarn_throttle(1.0, f"Failed to project lidar to camera: {exc}")
-            return None
-
-    def _detect_camera_obstacles(self, lidar_points: np.ndarray, header) -> Tuple[np.ndarray, float]:
-        """
-        카메라 이미지에서 장애물 감지 및 라이다 포인트와 매칭.
-        Returns: (추가 장애물 포인트, 카메라 신뢰도)
-        """
-        if self.latest_image is None or not self.camera_info_received:
-            return np.zeros((0, 2), dtype=np.float32), 0.0
-        
-        # 이미지 타임아웃 확인
-        if rospy.get_time() - self.latest_image_time > self.image_timeout:
-            return np.zeros((0, 2), dtype=np.float32), 0.0
-        
-        try:
-            h, w = self.latest_image.shape[:2]
-            
-            # ROI 설정 (하단 부분만)
-            roi_y_start = int(h * self.camera_roi_bottom)
-            roi_y_end = int(h * self.camera_roi_top)
-            roi = self.latest_image[roi_y_start:roi_y_end, :]
-            
-            # 간단한 장애물 감지: 어두운 영역 또는 특정 색상 감지
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            
-            # 어두운 영역 감지 (장애물 후보)
-            _, dark_mask = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-            
-            # 모폴로지 연산으로 노이즈 제거
-            kernel = np.ones((5, 5), np.uint8)
-            dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
-            dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
-            
-            # 컨투어 찾기
-            contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # 라이다 포인트를 카메라 이미지에 투영
-            projected_points = self._project_lidar_to_camera(lidar_points, header)
-            
-            camera_obstacles = []
-            confidence_sum = 0.0
-            valid_detections = 0
-            
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area < 100:  # 너무 작은 영역은 무시
-                    continue
-                
-                # 컨투어 중심
-                M = cv2.moments(contour)
-                if M["m00"] == 0:
-                    continue
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"]) + roi_y_start  # 전체 이미지 좌표로 변환
-                
-                # 라이다 포인트와 매칭 확인
-                matched = False
-                if projected_points is not None:
-                    distances = np.linalg.norm(projected_points - np.array([cx, cy]), axis=1)
-                    if np.any(distances < 50):  # 50픽셀 이내면 매칭됨
-                        matched = True
-                
-                # 매칭되지 않은 새로운 장애물 감지
-                if not matched:
-                    # 이미지 좌표를 라이다 좌표계로 역투영 (간단한 근사)
-                    # 실제로는 카메라-라이다 변환의 역변환이 필요하지만, 여기서는 간단히 처리
-                    # ROI 하단 중심부의 장애물을 전방으로 가정
-                    obstacle_x = -0.5  # 전방 0.5m 가정
-                    obstacle_y = (cx - w/2) * 0.001  # 픽셀을 미터로 변환 (근사)
-                    camera_obstacles.append([obstacle_x, obstacle_y])
-                    
-                    # 신뢰도 계산 (면적 기반)
-                    confidence = min(1.0, area / 5000.0)  # 최대 5000 픽셀 면적에서 신뢰도 1.0
-                    confidence_sum += confidence
-                    valid_detections += 1
-            
-            # 평균 신뢰도
-            camera_confidence = confidence_sum / max(1, valid_detections) if valid_detections > 0 else 0.0
-            
-            if len(camera_obstacles) > 0:
-                return np.array(camera_obstacles, dtype=np.float32), camera_confidence
-            else:
-                return np.zeros((0, 2), dtype=np.float32), camera_confidence
-                
-        except Exception as exc:
-            rospy.logwarn_throttle(1.0, f"Camera obstacle detection failed: {exc}")
-            return np.zeros((0, 2), dtype=np.float32), 0.0
+    # 카메라 관련 메서드 제거됨
+    # image_callback, camera_info_callback, _project_lidar_to_camera, _detect_camera_obstacles 제거
 
     def _select_target(
         self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False,
