@@ -309,25 +309,28 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 전방 40cm 이내, 현재 주행 방향(조향각)과 겹치는 장애물만 인식 (회피 발동용)
+        # 3단계: 전방 45cm 이내, [현재 주행 방향(조향각)과 겹치거나] OR [차량 정면(Static)에 있는] 장애물 인식
         # 3-1. 현재 조향각 계산
-        # steering_angle = (target_servo - self.servo_center) / self.servo_per_rad
         current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
         
-        # 3-2. 주행 경로(Corridor) 필터링
-        # 현재 조향각 기준 ±20도 (약 ±0.35 rad) 이내의 장애물만 위험한 것으로 간주
-        # 40cm 거리에서 차폭(30cm)을 커버하는 각도가 약 20도임
-        corridor_width_rad = math.radians(20.0)
+        # 3-2. 주행 경로(Corridor) 필터링 (동적) - 범위를 ±40도로 확장하여 회피 중 소실 방지
+        corridor_width_rad = math.radians(40.0)
         angle_diff = np.abs(angles - current_steering_angle)
         corridor_mask = angle_diff <= corridor_width_rad
         
-        # 3-3. 거리 필터링 (40cm 이내)
-        obstacle_detection_range = 0.40  # 40cm
+        # 3-3. 전방 고정(Static) 필터링 - 조향을 꺾어도 바로 앞 장애물은 놓치지 않도록 함
+        static_front_width_rad = math.radians(25.0)
+        static_front_mask = np.abs(angles) <= static_front_width_rad
+        
+        # 3-4. 거리 필터링 (45cm 이내 - 약간의 여유 추가)
+        obstacle_detection_range = 0.45
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
-        # 3-4. 두 조건 모두 만족하는 포인트만 장애물로 인식
-        obstacle_mask = corridor_mask & distance_mask
+        # 3-5. (Corridor OR Static) AND Distance
+        final_angle_mask = corridor_mask | static_front_mask
+        obstacle_mask = final_angle_mask & distance_mask
+        
         obstacle_points = xy[obstacle_mask]
         front_count = len(obstacle_points)
         
@@ -336,8 +339,8 @@ class LidarAvoidancePlanner:
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[obstacle_mask]))
-        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points (front 20deg, < %.2fm), min_dist=%.2fm, total_points=%d", 
-                               front_count, obstacle_detection_range, min_dist, len(xy))
+        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points (< %.2fm), min_dist=%.2fm", 
+                               front_count, obstacle_detection_range, min_dist)
         
         # 4단계: 클러스터링으로 노이즈 제거 (선택적)
         # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
@@ -662,16 +665,21 @@ class LidarAvoidancePlanner:
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 0.40  # 40cm
+            obstacle_detection_range = 0.45  # 45cm
             
-            # 현재 조향각 기준 ±20도 필터링
+            # 현재 조향각 기준 ±40도 필터링 (Corridor)
             current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
-            corridor_width_rad = math.radians(20.0)
+            corridor_width_rad = math.radians(40.0)
             angle_diff = np.abs(all_angles - current_steering_angle)
+            corridor_mask = angle_diff <= corridor_width_rad
+            
+            # 전방 고정(Static) 필터링
+            static_front_width_rad = math.radians(25.0)
+            static_front_mask = np.abs(all_angles) <= static_front_width_rad
             
             # 거리 및 각도 필터링
             dist_mask = all_distances < obstacle_detection_range
-            angle_mask = angle_diff <= corridor_width_rad
+            angle_mask = corridor_mask | static_front_mask
             
             close_mask = dist_mask & angle_mask
             
