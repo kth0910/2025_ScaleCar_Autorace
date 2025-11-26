@@ -153,10 +153,10 @@ class LaneFollower:
         # 속도 제어 파라미터
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
-        self.max_pwm = rospy.get_param("~max_pwm", 1500.0)
-        self.min_pwm = rospy.get_param("~min_pwm", 900.0)
+        self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM (3000 ~ 0.65m/s)
+        self.min_pwm = rospy.get_param("~min_pwm", 0.0)  # ERPM (0 = Stop)
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
-        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.20)  # 20cm에서 완전 정지
+        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         speed_pwm_param = rospy.get_param("~speed", 2000.0)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
         self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
@@ -474,16 +474,16 @@ class LaneFollower:
             # 거리 기반 속도 감소: 30cm부터 점진적으로 감소, 20cm에서 완전 정지
             speed_reduction_factor = 1.0
             if closest < self.speed_reduction_start:
-                # 30cm ~ 20cm 구간에서 선형 감소
-                reduction_range = self.speed_reduction_start - self.hard_stop_distance  # 0.3 - 0.2 = 0.1m
+                # 30cm ~ 15cm 구간에서 선형 감소
+                reduction_range = self.speed_reduction_start - self.hard_stop_distance
                 if reduction_range > 0:
                     distance_in_range = closest - self.hard_stop_distance
                     speed_reduction_factor = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
             elif closest <= self.hard_stop_distance:
-                # 20cm 이하는 완전 정지 (min_pwm으로 설정, 역회전 방지)
+                # 15cm 이하는 완전 정지 (min_pwm=0으로 설정)
                 speed_reduction_factor = 0.0
             
-            # 속도 계산 (PWM) - min_pwm 이상으로 유지 (역회전 방지)
+            # 속도 계산 (PWM/ERPM) - min_pwm 이상으로 유지
             speed_range = self.max_pwm - self.min_pwm
             target_pwm = self.min_pwm + speed_range * speed_reduction_factor
         else:
