@@ -33,7 +33,7 @@ class LidarAvoidancePlanner:
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.forward_fov = math.radians(rospy.get_param("~forward_fov_deg", 210.0))
         self.max_range = rospy.get_param("~max_range", 8.0)
-        self.safe_distance = rospy.get_param("~safe_distance", 0.40)  # 35cm 안전 거리
+        self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 35cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
@@ -104,6 +104,9 @@ class LidarAvoidancePlanner:
         )
         self.steering_command_pub = rospy.Publisher(
             "lidar_avoidance/steering_cmd", Float64, queue_size=1
+        )
+        self.gap_marker_pub = rospy.Publisher(
+            "lidar_avoidance/fgm_debug", MarkerArray, queue_size=1
         )
 
         self.last_scan_time = rospy.get_time()
@@ -186,7 +189,7 @@ class LidarAvoidancePlanner:
             target_angle,
             target_distance,
             selected_score,
-        ) = self._select_target(ranges, angles)
+        ) = self._select_target(ranges, angles, scan.header)
         
         if target_angle is None:
             # 전방에 경로가 없을 때
@@ -453,7 +456,7 @@ class LidarAvoidancePlanner:
     # image_callback, camera_info_callback, _project_lidar_to_camera, _detect_camera_obstacles 제거
 
     def _select_target(
-        self, ranges: np.ndarray, angles: np.ndarray
+        self, ranges: np.ndarray, angles: np.ndarray, header=None
     ) -> Tuple[Optional[float], float, float]:
         """
         Follow-the-Gap Method (FGM) 강화 버전
@@ -517,7 +520,10 @@ class LidarAvoidancePlanner:
             # 여전히 Gap이 없으면 가장 먼 곳으로
             max_idx = np.argmax(proc_ranges)
             if proc_ranges[max_idx] < 0.3:
+                self._publish_fgm_debug(header, proc_ranges, angles, None, None, None)
                 return None, 0.0, 0.0
+            
+            self._publish_fgm_debug(header, proc_ranges, angles, None, None, max_idx)
             return angles[max_idx], proc_ranges[max_idx], 0.5
             
         # 가장 긴 Gap 선택
@@ -550,7 +556,70 @@ class LidarAvoidancePlanner:
         rospy.logdebug_throttle(0.5, "FGM Enhanced: Gap [%d:%d], Target Angle %.1f deg", 
                                best_start, best_end, math.degrees(target_angle))
         
+        self._publish_fgm_debug(header, proc_ranges, angles, best_start, best_end, best_idx)
+        
         return target_angle, target_distance, 1.0
+
+    def _publish_fgm_debug(self, header, ranges, angles, start_idx, end_idx, goal_idx):
+        if header is None: return
+        marker_array = MarkerArray()
+        
+        # Gap Marker (Green Points)
+        gap_marker = Marker()
+        gap_marker.header = header
+        gap_marker.ns = "fgm_gap"
+        gap_marker.id = 0
+        if start_idx is not None and end_idx is not None:
+            gap_marker.type = Marker.POINTS
+            gap_marker.action = Marker.ADD
+            gap_marker.scale.x = 0.05
+            gap_marker.scale.y = 0.05
+            gap_marker.color.r = 0.0
+            gap_marker.color.g = 1.0
+            gap_marker.color.b = 0.0
+            gap_marker.color.a = 0.8
+            
+            g_ranges = ranges[start_idx:end_idx]
+            g_angles = angles[start_idx:end_idx]
+            
+            for r, a in zip(g_ranges, g_angles):
+                if r > 0.1:  # 유효한 거리만 표시
+                    p = Point()
+                    p.x = float(r * math.cos(a))
+                    p.y = float(r * math.sin(a))
+                    gap_marker.points.append(p)
+        else:
+            gap_marker.action = Marker.DELETE
+            
+        marker_array.markers.append(gap_marker)
+
+        # Goal Marker (Cyan Sphere)
+        goal_marker = Marker()
+        goal_marker.header = header
+        goal_marker.ns = "fgm_goal"
+        goal_marker.id = 1
+        if goal_idx is not None:
+            goal_marker.type = Marker.SPHERE
+            goal_marker.action = Marker.ADD
+            goal_marker.scale.x = 0.2
+            goal_marker.scale.y = 0.2
+            goal_marker.scale.z = 0.2
+            goal_marker.color.r = 0.0
+            goal_marker.color.g = 1.0
+            goal_marker.color.b = 1.0
+            goal_marker.color.a = 1.0
+            
+            r = ranges[goal_idx]
+            a = angles[goal_idx]
+            goal_marker.pose.position.x = float(r * math.cos(a))
+            goal_marker.pose.position.y = float(r * math.sin(a))
+            goal_marker.pose.orientation.w = 1.0
+        else:
+            goal_marker.action = Marker.DELETE
+            
+        marker_array.markers.append(goal_marker)
+        
+        self.gap_marker_pub.publish(marker_array)
 
     # 속도 제어는 main_run.py에서 담당하므로 제거됨
 
