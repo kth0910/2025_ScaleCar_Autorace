@@ -62,6 +62,15 @@ class LidarAvoidancePlanner:
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
 
+        # PID 제어 파라미터 (재적용)
+        # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)  # 반응성 확보
+        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.0)  # I항은 신중하게 (0.0 권장)
+        self.pid_kd = rospy.get_param("~lidar_pid_kd", 0.8)  # 진동 억제
+        self.prev_error = 0.0
+        self.integral_error = 0.0
+        self.prev_time = rospy.get_time()
+
         # 카메라-라이다 퓨전 설정
         self.enable_camera_fusion = rospy.get_param("~enable_camera_fusion", True)
         self.camera_topic = rospy.get_param("~camera_topic", "/usb_cam/image_rect_color")
@@ -225,12 +234,33 @@ class LidarAvoidancePlanner:
         # 전방 30도 이내 장애물이 없으면 회피 기동 계속
         emergency_stop = False
 
-        # 조향각 계산 (속도는 main_run.py에서 제어)
-        # PID 제어 제거: target_angle은 에러가 아니라 목표 조향각임. 적분하면 발산함.
-        steering_angle = clamp(target_angle, -self.max_steering_angle, self.max_steering_angle)
+        # PID 제어 적용 (Heading Error Correction)
+        # target_angle은 현재 차량 헤딩과 목표 경로 사이의 각도 차이(에러)임.
+        # 이 에러를 0으로 줄이는 것이 목표.
+        current_time = rospy.get_time()
+        dt = current_time - self.prev_time
+        if dt <= 0 or dt > 1.0:
+            dt = 0.033
+        self.prev_time = current_time
+
+        error = target_angle
         
-        # [중요] 조향 방향 반전: 장애물쪽으로 조향하는 문제 해결을 위해 부호 반전
-        # (Left Turn이 Positive Angle인데, 서보 설정이나 라이다 좌표계 문제로 반대로 동작할 수 있음)
+        # 적분항
+        self.integral_error += error * dt
+        self.integral_error = clamp(self.integral_error, -0.5, 0.5)  # Windup 방지 (엄격하게 제한)
+        
+        # 미분항
+        derivative = (error - self.prev_error) / dt
+        self.prev_error = error
+        
+        # PID 출력 (목표 조향각)
+        pid_steering_angle = (self.pid_kp * error) + (self.pid_ki * self.integral_error) + (self.pid_kd * derivative)
+        
+        # 조향각 제한
+        steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
+        
+        # [중요] 조향 방향 반전 유지: PID 출력값을 서보 명령으로 변환할 때 부호 반전
+        # (Left Turn이 Positive Angle -> 서보 값 감소)
         servo_cmd = self.servo_center - self.servo_per_rad * steering_angle
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
 
