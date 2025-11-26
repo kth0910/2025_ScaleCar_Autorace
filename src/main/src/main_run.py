@@ -195,10 +195,6 @@ class LaneFollower:
         self.crosswalk_stop_duration = 7.0       # 7초 정지
 
         rospy.on_shutdown(self._cleanup)
-        
-        # 표지판 인식용 템플릿 초기화
-        self._init_sign_templates()
-        
         rospy.loginfo("LaneFollower initialized.")
 
     def timer_callback(self, event):
@@ -813,39 +809,13 @@ class LaneFollower:
         # 따라서 이 청크는 취소하고, 아래에 새로운 청크로 파일 끝에 추가하겠습니다.
         pass
 
-    def _init_sign_templates(self):
-        """좌/우 화살표 템플릿 생성 (곡선형 화살표, 회전 중심을 템플릿 중앙에 정렬)"""
-        self.sign_template_size = (64, 64)
-        thickness = 12
-        radius = 20
-        center_x, center_y = 32, 32
-        
-        # 1. Left Arrow Template
-        self.template_left = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 곡선 그리기 (Center(32,32), Radius 20, Top-Right Quadrant)
-        # 270도(상) ~ 360도(우) 사이의 호를 그립니다.
-        cv2.ellipse(self.template_left, (center_x, center_y), (radius, radius), 0, 270, 360, 255, thickness)
-        # 수직 스템 (오른쪽 아래로 내려감)
-        cv2.line(self.template_left, (center_x + radius, center_y), (center_x + radius, 64), 255, thickness)
-        # 화살촉 (왼쪽, 상단 끝점 (32, 12)에 위치)
-        # Tip at (10, 12), Base at (34, 0) ~ (34, 24)
-        pts_left = np.array([[10, 12], [34, 0], [34, 24]], np.int32)
-        cv2.fillPoly(self.template_left, [pts_left], 255)
-        
-        # 2. Right Arrow Template
-        self.template_right = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 곡선 그리기 (Center(32,32), Radius 20, Top-Left Quadrant)
-        # 180도(좌) ~ 270도(상) 사이의 호를 그립니다.
-        cv2.ellipse(self.template_right, (center_x, center_y), (radius, radius), 0, 180, 270, 255, thickness)
-        # 수직 스템 (왼쪽 아래로 내려감)
-        cv2.line(self.template_right, (center_x - radius, center_y), (center_x - radius, 64), 255, thickness)
-        # 화살촉 (오른쪽, 상단 끝점 (32, 12)에 위치)
-        # Tip at (54, 12), Base at (30, 0) ~ (30, 24)
-        pts_right = np.array([[54, 12], [30, 0], [30, 24]], np.int32)
-        cv2.fillPoly(self.template_right, [pts_right], 255)
-
     def _detect_traffic_sign(self, frame):
-        """파란색 원형 표지판 감지 및 화살표 방향 판정"""
+        """
+        파란색 원형 표지판 감지 및 화살표 방향 판정 (Pixel Sum 방식)
+        - HSV 파란색 마스크로 표지판 영역 검출
+        - ROI 내부에서 흰색 마스크 추출
+        - 하단 좌/우 1/4 영역의 흰색 픽셀 수 비교로 방향 판정
+        """
         if frame is None:
             return
 
@@ -907,42 +877,47 @@ class LaneFollower:
             upper_white = np.array([180, 60, 255])
             white_mask = cv2.inRange(roi_hsv, lower_white, upper_white)
             
-            # 템플릿 매칭을 위해 리사이즈
-            white_resized = cv2.resize(white_mask, self.sign_template_size)
+            # 4. 픽셀 합 기반 방향 판정
+            # ROI를 4분할하여 하단 좌/우 영역의 흰색 픽셀 수 계산
+            rh, rw = white_mask.shape[:2]
+            cy, cx = rh // 2, rw // 2
             
-            # 4. 템플릿 매칭
-            res_left = cv2.matchTemplate(white_resized, self.template_left, cv2.TM_CCOEFF_NORMED)
-            res_right = cv2.matchTemplate(white_resized, self.template_right, cv2.TM_CCOEFF_NORMED)
+            # 하단 왼쪽 (Bottom-Left)
+            # y: cy ~ rh, x: 0 ~ cx
+            bottom_left_roi = white_mask[cy:rh, 0:cx]
+            left_sum = cv2.countNonZero(bottom_left_roi)
             
-            score_left = res_left.max()
-            score_right = res_right.max()
-            
-            # 디버깅: 점수 로그 출력
-            rospy.loginfo_throttle(0.5, f"Sign Scores -> L: {score_left:.3f}, R: {score_right:.3f}")
+            # 하단 오른쪽 (Bottom-Right)
+            # y: cy ~ rh, x: cx ~ rw
+            bottom_right_roi = white_mask[cy:rh, cx:rw]
+            right_sum = cv2.countNonZero(bottom_right_roi)
             
             direction = "Unknown"
-            match_score = 0.0
             
-            # 임계값 (0.25 이상일 때만 인정)
-            threshold = 0.25
-            if score_left > threshold and score_left > score_right:
-                direction = "LEFT"
-                match_score = score_left
-            elif score_right > threshold and score_right > score_left:
+            # 판정 로직
+            # 왼쪽 아래 픽셀이 더 많으면 -> 스템이 왼쪽에 있음 -> 우회전 표지판 (Right Arrow)
+            if left_sum > right_sum * 1.1:
                 direction = "RIGHT"
-                match_score = score_right
+            # 오른쪽 아래 픽셀이 더 많으면 -> 스템이 오른쪽에 있음 -> 좌회전 표지판 (Left Arrow)
+            elif right_sum > left_sum * 1.1:
+                direction = "LEFT"
+            
+            # 디버깅 로그
+            rospy.loginfo_throttle(0.5, f"Sign Pixel Sums -> L(Bottom-Left): {left_sum}, R(Bottom-Right): {right_sum} => {direction}")
             
             # 5. 결과 시각화
             color = (0, 255, 0) if direction != "Unknown" else (0, 255, 255)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-            label = f"{direction} ({match_score:.2f})"
+            label = f"{direction}"
             cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
             # 디버그 창
             if self.enable_viz:
-                cv2.imshow("Sign Arrow Mask", white_resized)
-                cv2.imshow("Template Left", self.template_left)
-                cv2.imshow("Template Right", self.template_right)
+                # 시각화를 위해 분할선 그리기
+                debug_mask = cv2.cvtColor(white_mask, cv2.COLOR_GRAY2BGR)
+                cv2.line(debug_mask, (0, cy), (rw, cy), (0, 0, 255), 1) # 가로선
+                cv2.line(debug_mask, (cx, cy), (cx, rh), (0, 0, 255), 1) # 세로선 (하단만)
+                cv2.imshow("Sign Arrow Mask (Split)", debug_mask)
 
         if self.enable_viz:
             cv2.imshow("Sign Blue Mask", blue_mask)
