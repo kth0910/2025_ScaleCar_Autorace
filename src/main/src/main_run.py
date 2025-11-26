@@ -8,7 +8,7 @@ import rospy
 import cv2
 import numpy as np
 
-from std_msgs.msg import Float64, Bool
+from std_msgs.msg import Float64, Bool, String
 from sensor_msgs.msg import Image
 from ackermann_msgs.msg import AckermannDriveStamped
 from cv_bridge import CvBridge
@@ -112,6 +112,7 @@ class LaneFollower:
         self.center_pub = rospy.Publisher("/lane_center_x", Float64, queue_size=1)
         self.error_pub = rospy.Publisher("/lane_error", Float64, queue_size=1)
         self.roi_color_pub = rospy.Publisher("/camera/roi_color", Image, queue_size=1)
+        self.detected_color_pub = rospy.Publisher("/camera/detected_color", String, queue_size=1)
 
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
         
@@ -169,7 +170,7 @@ class LaneFollower:
             self._pwm_to_drive_speed(speed_pwm_param)
         )
         self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
-        self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.6)
+        self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.7)
         self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 하단 20%만 사용
         self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 검출 임계값 (2%로 낮춤)
         self.current_color_speed_mps = self._clamp(
@@ -623,6 +624,9 @@ class LaneFollower:
             self.roi_color_pub.publish(msg)
         except Exception:
             pass
+            
+        # 검출된 색상 문자열 발행
+        self.detected_color_pub.publish(String(detected))
             
         # 화면 출력
         if self.enable_viz:
