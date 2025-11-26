@@ -110,12 +110,8 @@ class LidarAvoidancePlanner:
             )
         # 속도 제어는 main_run.py에서 담당하므로 제거
         # 조향만 제어
-        self.steering_pub = rospy.Publisher(
-            "/commands/servo/position", Float64, queue_size=1
-        ) if self.publish_direct_controls else None
-        self.ackermann_pub = rospy.Publisher(
-            self.ackermann_topic, AckermannDriveStamped, queue_size=1
-        ) if self.publish_ackermann else None
+        self.steering_pub = None
+        self.ackermann_pub = None
         self.marker_pub = rospy.Publisher(
             "lidar_avoidance/obstacles", MarkerArray, queue_size=1
         )
