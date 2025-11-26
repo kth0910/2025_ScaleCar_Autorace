@@ -36,8 +36,10 @@ class LaneFollower:
         self.pid_ki = rospy.get_param("~steering_ki", -0.00004)
         self.pid_kd = rospy.get_param("~steering_kd", -0.00045)
         self.steering_gain = self.pid_kp  # backward compatibility
-        self.steering_offset = rospy.get_param("~steering_offset", 0.60)
+        self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 중앙 정렬 (0.60 → 0.50)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
+        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 더 빠른 반응
+        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.55)  # 우측 조향 시 기존 유지
         self.min_servo = rospy.get_param("~min_servo", 0.05)
         self.max_servo = rospy.get_param("~max_servo", 0.95)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
@@ -46,9 +48,11 @@ class LaneFollower:
         self.max_error_bias = rospy.get_param("~max_error_bias", 120.0)
         self.error_bias = rospy.get_param("~initial_error_bias", 0.0)
         self.max_servo_delta = rospy.get_param("~max_servo_delta", 0.035)
+        self.max_servo_delta_left = rospy.get_param("~max_servo_delta_left", 0.05)  # 좌측 조향 시 더 큰 변화 허용
+        self.max_servo_delta_right = rospy.get_param("~max_servo_delta_right", 0.035)  # 우측 조향 시 기존 유지
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
-        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.35)
+        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.40)  # 좌측 조향 개선 (0.35 → 0.40)
         self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
         # 노란 차선 검출 파라미터 (밝기 기반 필터링 없이 색상만 사용)
         self.use_yellow_lane_detection = rospy.get_param("~use_yellow_lane_detection", True)
@@ -257,15 +261,29 @@ class LaneFollower:
 
         if lane_detected:
             delta_servo = desired_servo - self.prev_servo
-            delta_servo = self._clamp(delta_servo, -self.max_servo_delta, self.max_servo_delta)
+            # 좌측 조향(양수)과 우측 조향(음수)에 대해 비대칭 제한 적용
+            if delta_servo > 0:
+                # 좌측 조향: 더 큰 변화 허용
+                delta_servo = self._clamp(delta_servo, 0, self.max_servo_delta_left)
+            else:
+                # 우측 조향: 기존 제한 유지
+                delta_servo = self._clamp(delta_servo, -self.max_servo_delta_right, 0)
             limited_target = self.prev_servo + delta_servo
         else:
             # 차선이 검출되지 않으면 기존 방향 유지
             limited_target = self.prev_servo
 
+        # 좌측 조향과 우측 조향에 대해 비대칭 smoothing 적용
+        if limited_target > self.prev_servo:
+            # 좌측 조향: 더 빠른 반응 (smoothing 값이 작을수록 빠름)
+            smoothing_factor = self.steering_smoothing_left
+        else:
+            # 우측 조향: 기존 smoothing 유지
+            smoothing_factor = self.steering_smoothing_right
+        
         smoothed_servo = (
-            self.steering_smoothing * self.prev_servo
-            + (1.0 - self.steering_smoothing) * limited_target
+            smoothing_factor * self.prev_servo
+            + (1.0 - smoothing_factor) * limited_target
         )
         self.prev_servo = smoothed_servo
 
