@@ -448,8 +448,8 @@ class LidarAvoidancePlanner:
         반경 1m 내의 장애물 밀도를 평가하고, 10cm 이내 접근 시 강력한 페널티를 부여하여
         장애물 밀도가 낮은 곳으로 주행하도록 유도함.
         """
-        # 후보 경로 생성 (정밀도를 위해 샘플 수 증가: 50 -> 90)
-        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 90)
+        # 후보 경로 생성 (정밀도를 위해 샘플 수 증가: 50)
+        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 50)
         
         best_score = -float('inf')
         best_angle = 0.0
