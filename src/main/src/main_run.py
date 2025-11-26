@@ -188,6 +188,13 @@ class LaneFollower:
         # 제어 루프 타이머 (30Hz)
         self.timer = rospy.Timer(rospy.Duration(0.033), self.timer_callback)
 
+        # 횡단보도 감지 및 정지 관련 변수
+        self.is_crosswalk_stopping = False
+        self.crosswalk_stop_start_time = 0.0
+        self.crosswalk_cooldown = 0.0
+        self.crosswalk_cooldown_duration = 10.0  # 10초 쿨다운
+        self.crosswalk_stop_duration = 5.0       # 5초 정지
+
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
 
@@ -226,6 +233,14 @@ class LaneFollower:
         if self.enable_viz and not self.initialized:
             self._setup_trackbars()
             self.initialized = True
+
+        # 횡단보도 감지 (쿨다운 중이거나 이미 정지 중이면 스킵)
+        current_time = rospy.get_time()
+        if not self.is_crosswalk_stopping and (current_time - self.crosswalk_cooldown > self.crosswalk_cooldown_duration):
+             if self._detect_crosswalk(frame):
+                 self.is_crosswalk_stopping = True
+                 self.crosswalk_stop_start_time = current_time
+                 rospy.loginfo("Crosswalk detected! Initiating stop.")
 
         lane_mask = self._create_lane_mask(frame)
         slide_img, center_x, has_lane = self._run_slidewindow(lane_mask)
@@ -520,6 +535,18 @@ class LaneFollower:
             rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
             final_speed_mps = self.current_color_speed_mps
         
+        # [Override] 횡단보도 정지 로직
+        if self.is_crosswalk_stopping:
+            elapsed = current_time - self.crosswalk_stop_start_time
+            if elapsed < self.crosswalk_stop_duration:
+                final_speed_mps = 0.0
+                rospy.loginfo_throttle(1.0, f"Crosswalk detected! Stopping... ({elapsed:.1f}/{self.crosswalk_stop_duration}s)")
+            else:
+                self.is_crosswalk_stopping = False
+                self.crosswalk_cooldown = current_time
+                rospy.loginfo("Crosswalk stop finished. Resuming.")
+
+        
         # 4. PWM 변환
         target_pwm = self._drive_speed_to_pwm(final_speed_mps)
         
@@ -752,6 +779,85 @@ class LaneFollower:
             cv2.destroyAllWindows()
         except Exception:
             pass
+
+    def _detect_crosswalk(self, frame):
+        """
+        BEV 변환 후 밝은 영역(Adaptive Threshold) 기반으로 횡단보도(수평 막대 패턴) 검출
+        """
+        # 1. BEV 변환
+        try:
+            warped = self.warper.warp(frame)
+        except Exception:
+            return False
+        
+        # 2. BGR -> HLS 변환 후 L 채널 추출
+        hls = cv2.cvtColor(warped, cv2.COLOR_BGR2HLS)
+        L = hls[:, :, 1]
+        
+        # 3. Adaptive Threshold (밝은 영역 추출)
+        # blockSize=21, C=5 (조정 가능)
+        thresh = cv2.adaptiveThreshold(L, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 5)
+        
+        # 4. Morphology (Open -> Close) 노이즈 제거
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        morph = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        morph = cv2.morphologyEx(morph, cv2.MORPH_CLOSE, kernel)
+        
+        # 5. 윤곽선 검출
+        contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        valid_rects = []
+        debug_img = warped.copy() if self.enable_viz else None
+        
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 300:  # 너무 작은 영역 제외
+                continue
+                
+            # 회전된 직사각형 구하기
+            rect = cv2.minAreaRect(cnt)
+            (center, (w, h), angle) = rect
+            
+            # 긴 변과 짧은 변 구분
+            long_side = max(w, h)
+            short_side = min(w, h)
+            
+            if short_side == 0: continue
+            
+            # Aspect Ratio 체크 (길쭉한 직사각형)
+            aspect_ratio = long_side / short_side
+            if aspect_ratio < 2.0:
+                continue
+                
+            # 방향 체크: 차 진행 방향(수직)에 대해 수직(수평)이어야 함
+            # Bounding Rect의 aspect ratio가 w > h 인지 확인 (수평 막대)
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            if bw < bh * 1.5: # 수직에 가깝거나 정사각형이면 제외 (수평이어야 함)
+                continue
+            
+            valid_rects.append(rect)
+            
+            if self.enable_viz:
+                box = cv2.boxPoints(rect)
+                box = np.int0(box)
+                cv2.drawContours(debug_img, [box], 0, (0, 255, 0), 2)
+        
+        # 6. 패턴 인식: 평행한 줄이 여러 개 있는지 (3개 이상)
+        is_crosswalk = False
+        if len(valid_rects) >= 3:
+            # Y 좌표 기준으로 정렬 (위아래로 쌓여있는지 확인)
+            valid_rects.sort(key=lambda r: r[0][1])
+            
+            # 추가 검증: X 좌표가 비슷한지 (일렬로 정렬) 확인 가능하나 일단 개수로 판단
+            is_crosswalk = True
+            if self.enable_viz:
+                cv2.putText(debug_img, "Crosswalk Detected!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+        if self.enable_viz:
+            cv2.imshow("Crosswalk Debug", debug_img)
+            # cv2.imshow("Crosswalk Thresh", morph)
+            
+        return is_crosswalk
 
     def _reset_line_state(self):
         self.slidewindow.left_exists = False
