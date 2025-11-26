@@ -153,8 +153,8 @@ class LaneFollower:
         self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 0.30)  # 30cm부터 속도 감소
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         speed_pwm_param = rospy.get_param("~speed", 2000.0)
-        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
-        self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
+        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 5000.0)  # PWM 변화율 (빠른 반응을 위해 대폭 상향)
+        self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.8)  # 지수적 스무딩 계수 (반응성 향상)
 
         # 라이다 장애물 거리 구독 (속도 제어용)
         self.closest_obstacle = None
@@ -167,8 +167,7 @@ class LaneFollower:
         rospy.Subscriber("lidar_avoidance/steering_cmd", Float64, self._lidar_steering_callback, queue_size=1)
         # 색상 기반 속도 제어 파라미터
         self.neutral_lane_speed = rospy.get_param(
-            "~neutral_lane_speed",
-            self._pwm_to_drive_speed(speed_pwm_param)
+            "~neutral_lane_speed", 0.4
         )
         self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
         self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.7)
@@ -515,10 +514,10 @@ class LaneFollower:
                     ratio = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
                     lidar_safe_speed_mps = self.max_drive_speed * ratio
             
-        # 3. 통합: 가장 보수적인(느린) 속도 선택
+        # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
-        # [Override] Red/Blue 색상 검출 시 속도 및 로그 오버라이드
+        # [Override] Red/Blue 색상 검출 시 속도 고정 (라이다 안전 속도 무시)
         if self.current_detected_color in ["red", "blue"]:
             rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
             final_speed_mps = self.current_color_speed_mps
@@ -664,6 +663,8 @@ class LaneFollower:
             target_speed = self.red_lane_speed
         elif detected_color == "blue":
             target_speed = self.blue_lane_speed
+        elif detected_color == "black":
+            target_speed = 0.4  # Black일 때는 0.4m/s 고정
         else:
             target_speed = self.neutral_lane_speed
 
