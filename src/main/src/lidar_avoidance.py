@@ -40,7 +40,7 @@ class LidarAvoidancePlanner:
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV 180도
-        self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
+        self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 6)  # 최소 연속 포인트 수 상향 (노이즈 제거 강화)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
         self.clearance_weight = rospy.get_param("~clearance_weight", 0.65)
@@ -109,10 +109,21 @@ class LidarAvoidancePlanner:
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
         
+        rospy.Subscriber(
+            "/commands/servo/position",
+            Float64,
+            self.servo_callback,
+            queue_size=1
+        )
+        self.current_servo = self.servo_center
+
         rospy.loginfo(
             "LidarAvoidancePlanner ready. Subscribing to %s (hardware only, no simulation)", 
             self.scan_topic
         )
+
+    def servo_callback(self, msg: Float64) -> None:
+        self.current_servo = msg.data
 
     def scan_callback(self, scan: LaserScan) -> None:
         self.last_scan_time = rospy.get_time()
@@ -295,19 +306,25 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 전방 20도, 1m 이내 장애물만 인식 (회피 로직용)
-        # 3-1. 전방 20도 필터링 (±10도)
-        # 3-1. 전방 각도 필터링 (설정된 각도 사용)
-        front_angle_limit = self.front_obstacle_angle * 0.5
-        front_angle_mask = np.abs(angles) <= front_angle_limit
+        # 3단계: 전방 40cm 이내, 현재 주행 방향(조향각)과 겹치는 장애물만 인식 (회피 발동용)
+        # 3-1. 현재 조향각 계산
+        # steering_angle = (target_servo - self.servo_center) / self.servo_per_rad
+        current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
         
-        # 3-2. 거리 필터링 (1m 이내)
-        obstacle_detection_range = 1.0  # 1m
+        # 3-2. 주행 경로(Corridor) 필터링
+        # 현재 조향각 기준 ±20도 (약 ±0.35 rad) 이내의 장애물만 위험한 것으로 간주
+        # 40cm 거리에서 차폭(30cm)을 커버하는 각도가 약 20도임
+        corridor_width_rad = math.radians(20.0)
+        angle_diff = np.abs(angles - current_steering_angle)
+        corridor_mask = angle_diff <= corridor_width_rad
+        
+        # 3-3. 거리 필터링 (40cm 이내)
+        obstacle_detection_range = 0.40  # 40cm
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
-        # 3-3. 두 조건 모두 만족하는 포인트만 장애물로 인식
-        obstacle_mask = front_angle_mask & distance_mask
+        # 3-4. 두 조건 모두 만족하는 포인트만 장애물로 인식
+        obstacle_mask = corridor_mask & distance_mask
         obstacle_points = xy[obstacle_mask]
         front_count = len(obstacle_points)
         
@@ -576,12 +593,16 @@ class LidarAvoidancePlanner:
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 1.0  # 1m
-            front_angle_limit = self.front_obstacle_angle * 0.5
+            obstacle_detection_range = 0.40  # 40cm
+            
+            # 현재 조향각 기준 ±20도 필터링
+            current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
+            corridor_width_rad = math.radians(20.0)
+            angle_diff = np.abs(all_angles - current_steering_angle)
             
             # 거리 및 각도 필터링
             dist_mask = all_distances < obstacle_detection_range
-            angle_mask = np.abs(all_angles) <= front_angle_limit
+            angle_mask = angle_diff <= corridor_width_rad
             
             close_mask = dist_mask & angle_mask
             
