@@ -108,9 +108,13 @@ class LidarAvoidancePlanner:
         self.gap_marker_pub = rospy.Publisher(
             "lidar_avoidance/fgm_debug", MarkerArray, queue_size=1
         )
+        self.processed_scan_pub = rospy.Publisher(
+            "lidar_avoidance/fgm_processed_scan", LaserScan, queue_size=1
+        )
 
         self.last_scan_time = rospy.get_time()
         self.scan_timeout = rospy.get_param("~scan_timeout", 1.0)  # seconds
+        self.avoidance_deadline = 0.0  # 회피 모드 유지 시간 (Persistence)
         
         rospy.Subscriber(
             "/commands/servo/position",
@@ -243,9 +247,15 @@ class LidarAvoidancePlanner:
         self._publish_path(scan.header, steering_angle, target_distance)
         self._publish_target_marker(scan.header, steering_angle, target_distance)
         
-        # 장애물이 감지된 경우(빨간 마커)에만 조향 명령 발행
+        # [검증 2] 회피 상태 유지 (Persistence)
+        # 장애물이 감지되면 데드라인 연장
         if len(obstacle_points) > 0:
+            self.avoidance_deadline = rospy.get_time() + 1.0  # 1초간 유지
+            
+        # 장애물이 감지되었거나, 유지 시간 내라면 조향 명령 발행
+        if rospy.get_time() < self.avoidance_deadline:
             self.steering_command_pub.publish(Float64(servo_cmd))
+            rospy.loginfo_throttle(0.5, "Avoidance Active! Servo: %.2f, Angle: %.1f deg", servo_cmd, math.degrees(steering_angle))
             
         self._publish_motion_commands(
             scan.header,
@@ -309,64 +319,39 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 전방 45cm 이내, [현재 주행 방향(조향각)과 겹치거나] OR [차량 정면(Static)에 있는] 장애물 인식
-        # 3-1. 현재 조향각 계산
-        current_steering_angle = (self.current_servo - self.servo_center) / self.servo_per_rad
+        # 3단계: [검증 1] 검출 조건 단순화 - 전방 60도(±30도), 0.5m 이내 무조건 인식
+        # 복잡한 Corridor 로직 제거하고 확실하게 잡히도록 변경
         
-        # 3-2. 주행 경로(Corridor) 필터링 (동적) - 범위를 ±40도로 확장하여 회피 중 소실 방지
-        corridor_width_rad = math.radians(40.0)
-        angle_diff = np.abs(angles - current_steering_angle)
-        corridor_mask = angle_diff <= corridor_width_rad
+        # 3-1. 전방 각도 필터링 (±30도)
+        # self.front_obstacle_angle 대신 더 넓은 고정 각도 사용
+        check_fov = math.radians(60.0) 
+        half_fov = check_fov * 0.5
         
-        # 3-3. 전방 고정(Static) 필터링 - 조향을 꺾어도 바로 앞 장애물은 놓치지 않도록 함
-        static_front_width_rad = math.radians(25.0)
-        static_front_mask = np.abs(angles) <= static_front_width_rad
+        # 각도 차이 계산 (0도 기준)
+        angle_mask = np.abs(angles) <= half_fov
         
-        # 3-4. 거리 필터링 (45cm 이내 - 약간의 여유 추가)
-        obstacle_detection_range = 0.45
+        # 3-2. 거리 필터링 (0.5m)
+        obstacle_detection_range = 0.50
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
-        # 3-5. (Corridor OR Static) AND Distance
-        final_angle_mask = corridor_mask | static_front_mask
-        obstacle_mask = final_angle_mask & distance_mask
+        # 3-3. 최종 마스크
+        obstacle_mask = angle_mask & distance_mask
         
         obstacle_points = xy[obstacle_mask]
         front_count = len(obstacle_points)
         
         if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found (front FOV, < %.2fm)", obstacle_detection_range)
+            rospy.logdebug_throttle(2.0, "No obstacle points found (Front 60deg, < %.2fm)", obstacle_detection_range)
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[obstacle_mask]))
-        rospy.loginfo_throttle(1.0, "Obstacle detection: %d points (< %.2fm), min_dist=%.2fm", 
-                               front_count, obstacle_detection_range, min_dist)
+        rospy.loginfo_throttle(0.5, "!! OBSTACLE DETECTED !! Count: %d, MinDist: %.2fm", front_count, min_dist)
         
-        # 4단계: 클러스터링으로 노이즈 제거 (선택적)
-        # 가까운 장애물이 많으면 클러스터링 적용, 적으면 그대로 사용
-        original_count = len(obstacle_points)
-        if len(obstacle_points) > 10:  # 포인트가 많을 때만 클러스터링
-            clustered_points = self._cluster_obstacle_points(obstacle_points)
-            if len(clustered_points) > 0:
-                obstacle_points = clustered_points
-                rospy.logdebug_throttle(2.0, "Clustered: %d -> %d points", original_count, len(clustered_points))
-            else:
-                # 클러스터링 실패 시 원본 포인트 유지 (벽 등 큰 장애물은 클러스터링 없이도 인식)
-                rospy.logwarn_throttle(1.0, "Clustering failed (0 points), keeping original %d points", original_count)
-        else:
-            # 포인트가 적으면 클러스터링 없이 모두 사용
-            rospy.logdebug_throttle(2.0, "Skipping clustering for %d points (< 10)", original_count)
+        # 4단계: 클러스터링 (생략 - 일단 다 잡음)
         
-        # 라이다 신뢰도 계산 (거리 기반: 가까울수록 높은 신뢰도)
-        if len(obstacle_points) > 0:
-            distances = np.linalg.norm(obstacle_points, axis=1)
-            min_dist = float(np.min(distances))
-            # 0.15m 이내: 신뢰도 1.0, 0.3m: 신뢰도 0.5, 그 이상: 신뢰도 감소
-            lidar_confidence = max(0.0, min(1.0, 1.0 - (min_dist - 0.15) / 0.15))
-            rospy.logdebug_throttle(2.0, "Obstacle detection: %d points, closest: %.2fm, confidence: %.2f", 
-                                    len(obstacle_points), min_dist, lidar_confidence)
-        else:
-            lidar_confidence = 0.0
+        # 라이다 신뢰도 계산
+        lidar_confidence = 1.0
         
         return obstacle_points, all_points, lidar_confidence
     
@@ -479,28 +464,34 @@ class LidarAvoidancePlanner:
         kernel = np.ones(kernel_size) / kernel_size
         proc_ranges = np.convolve(proc_ranges, kernel, mode='same')
         
-        # 2. Safety Bubble 적용
-        # 가장 가까운 포인트 찾기
-        min_idx = np.argmin(proc_ranges)
-        min_dist = proc_ranges[min_idx]
+        # 2. Safety Bubble 적용 (모든 장애물에 대해)
+        # 기존: 가장 가까운 점 하나만 처리 -> 수정: 일정 거리 이내 모든 점 처리하여 라바콘 사이를 벽으로 인식
         
-        # Bubble 반경 (차폭 + 여유)
-        # inflation_margin은 현재 0.3m로 설정됨
-        bubble_radius = self.inflation_margin + 0.15  # 여유를 더 둠 (0.45m)
+        obstacle_dist_limit = 1.5  # 1.5m 이내의 모든 장애물을 부풀림
+        # 유효한 장애물 인덱스 추출
+        obs_indices = np.where((proc_ranges < obstacle_dist_limit) & (proc_ranges > 0.01))[0]
         
-        if min_dist < self.max_range:
-            angle_increment = angles[1] - angles[0] if len(angles) > 1 else 0.01
-            # Bubble이 차지하는 각도 범위 계산
-            if min_dist < 0.01: min_dist = 0.01
-            bubble_angle = math.atan2(bubble_radius, min_dist)
-            bubble_idx_half = int(bubble_angle / angle_increment)
+        # 마스킹을 위한 배열 (True면 장애물 영역)
+        mask_indices = np.zeros(len(proc_ranges), dtype=bool)
+        
+        angle_increment = angles[1] - angles[0] if len(angles) > 1 else 0.01
+        
+        # 차폭 반경(0.3m) + 여유(0.15m) = 0.45m 반경
+        bubble_radius = self.inflation_margin + 0.15
+        
+        for i in obs_indices:
+            dist = proc_ranges[i]
+            # 거리에 따른 버블 크기 (각도) 계산: theta = atan(r / d)
+            if dist < 0.01: dist = 0.01
+            bubble_angle = math.atan2(bubble_radius, dist)
+            bubble_idx_count = int(bubble_angle / angle_increment)
             
-            # 인덱스 범위 클램핑
-            start_idx = max(0, min_idx - bubble_idx_half)
-            end_idx = min(len(proc_ranges), min_idx + bubble_idx_half + 1)
+            start = max(0, i - bubble_idx_count)
+            end = min(len(proc_ranges), i + bubble_idx_count + 1)
+            mask_indices[start:end] = True
             
-            # Bubble 영역을 0으로 설정 (장애물로 간주하여 Gap에서 제외)
-            proc_ranges[start_idx:end_idx] = 0.0
+        # Bubble 영역을 0으로 설정 (장애물로 간주하여 Gap에서 제외)
+        proc_ranges[mask_indices] = 0.0
             
         # 3. Max Gap 찾기
         # 주행 가능한 최소 거리 (Threshold)
@@ -536,6 +527,17 @@ class LidarAvoidancePlanner:
         best_start = starts[best_gap_idx]
         best_end = ends[best_gap_idx]
         
+        # [검증] Gap 정보 로그 출력
+        best_gap_len = best_end - best_start
+        angle_res = angles[1] - angles[0] if len(angles) > 1 else 0.01
+        gap_width_deg = math.degrees(best_gap_len * angle_res)
+        # 대략적인 미터 단위 폭 (중심 거리 기준)
+        center_dist = proc_ranges[(best_start + best_end) // 2]
+        gap_width_m = center_dist * math.radians(gap_width_deg)
+        
+        rospy.loginfo_throttle(0.5, "FGM Status: Found %d gaps. Best Gap: %.1f deg (approx %.2fm)", 
+                               len(starts), gap_width_deg, gap_width_m)
+        
         # 4. Goal Point 선택 (강화된 로직)
         # 단순히 중앙을 선택하는 것이 아니라, Gap 내에서 가장 깊은(멀리 있는) 지점을 향해 가중치를 둠
         # 이는 장애물 구간 끝에서 탈출할 때 유리함
@@ -555,6 +557,19 @@ class LidarAvoidancePlanner:
         
         target_angle = angles[best_idx]
         target_distance = proc_ranges[best_idx]
+        
+        # [검증] 처리된 스캔 데이터 발행 (Safety Bubble이 적용된 모습 확인용)
+        if self.processed_scan_pub.get_num_connections() > 0 and header is not None:
+            debug_scan = LaserScan()
+            debug_scan.header = header
+            debug_scan.header.frame_id = "laser" # 강제 설정 (필요시)
+            debug_scan.angle_min = angles[0]
+            debug_scan.angle_max = angles[-1]
+            debug_scan.angle_increment = angle_res
+            debug_scan.range_min = 0.0
+            debug_scan.range_max = self.max_range
+            debug_scan.ranges = proc_ranges.tolist()
+            self.processed_scan_pub.publish(debug_scan)
         
         rospy.logdebug_throttle(0.5, "FGM Enhanced: Gap [%d:%d], Target Angle %.1f deg", 
                                best_start, best_end, math.degrees(target_angle))
