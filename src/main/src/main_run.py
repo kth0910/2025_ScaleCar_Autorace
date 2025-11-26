@@ -817,7 +817,7 @@ class LaneFollower:
         
         # 흰색 정의: 명도(L)가 높고, 채도(S)는 크게 상관없으나 너무 높지 않은 것
         # OpenCV HLS 범위: H(0-180), L(0-255), S(0-255)
-        lower_white = np.array([0, 170, 0])      # L > 170 (밝음)
+        lower_white = np.array([0, 130, 0])      # L > 130 (완화됨)
         upper_white = np.array([180, 255, 255])
         white_mask = cv2.inRange(hls, lower_white, upper_white)
         
@@ -834,7 +834,7 @@ class LaneFollower:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 200:  # 너무 작은 노이즈 제외
+            if area < 100:  # 면적 기준 완화 (200 -> 100)
                 continue
                 
             # Bounding Rect 구하기
@@ -842,13 +842,13 @@ class LaneFollower:
             
             # 조건: 세로가 더 길어야 함 (h > w)
             # 횡단보도(Zebra Crossing)는 차 진행방향(세로)으로 긴 줄무늬가 가로로 나열됨
-            if h < w * 1.5: # 최소 1.5배 이상 길쭉한 세로 막대
+            if h < w * 1.1: # 비율 기준 완화 (1.5 -> 1.1)
                 continue
                 
             # 채워진 비율(Solidity) 체크: 직사각형에 가까워야 함
             rect_area = w * h
             solidity = float(area) / rect_area
-            if solidity < 0.7: # 70% 이상 채워져 있어야 함
+            if solidity < 0.5: # Solidity 기준 완화 (0.7 -> 0.5)
                 continue
             
             valid_rects.append((x, y, w, h))
@@ -856,9 +856,9 @@ class LaneFollower:
             if self.enable_viz:
                 cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
-        # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (3개 이상)
+        # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (2개 이상)
         is_crosswalk = False
-        if len(valid_rects) >= 3:
+        if len(valid_rects) >= 2: # 개수 기준 완화 (3 -> 2)
             # X 좌표 기준으로 정렬 (좌->우로 나열된 패턴인지 확인 가능)
             valid_rects.sort(key=lambda r: r[0])
             
@@ -893,7 +893,7 @@ class LaneFollower:
         blur = cv2.GaussianBlur(roi, (5, 5), 0)
         hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         
-        lower_white = np.array([0, 150, 0])
+        lower_white = np.array([0, 130, 0]) # 밝기 기준 완화 (150 -> 130)
         upper_white = np.array([180, 255, 255])
         mask = cv2.inRange(hls, lower_white, upper_white)
         
@@ -910,13 +910,13 @@ class LaneFollower:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 500: continue
+            if area < 200: continue # 면적 기준 완화 (500 -> 200)
             
             x, y, bw, bh = cv2.boundingRect(cnt)
             
-            # 조건: 가로로 긴 직사각형 (bw > bh * 3)
-            # 그리고 너비가 화면의 일정 비율 이상이어야 함 (예: 30% 이상)
-            if bw > bh * 3 and bw > w * 0.3:
+            # 조건: 가로로 긴 직사각형 (bw > bh * 2.0)
+            # 그리고 너비가 화면의 일정 비율 이상이어야 함 (예: 15% 이상)
+            if bw > bh * 2.0 and bw > w * 0.15: # 비율 기준 대폭 완화
                 has_stop_line = True
                 if self.enable_viz:
                     cv2.rectangle(debug_roi, (x, y), (x+bw, y+bh), (0, 0, 255), 2)
