@@ -412,6 +412,7 @@ class LidarAvoidancePlanner:
         """
         # 전방 30도 이내 각도 필터링 (±15도)
         # 전방 각도 필터링 (이미 0도가 전방으로 정렬됨)
+        front_angle_half = self.front_obstacle_angle * 0.5
         front_mask = np.abs(angles) <= front_angle_half
         
         if not np.any(front_mask):
