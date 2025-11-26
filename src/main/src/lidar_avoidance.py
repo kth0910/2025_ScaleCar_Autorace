@@ -39,7 +39,7 @@ class LidarAvoidancePlanner:
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
-        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 60.0))  # 전방 60도 이내 장애물 감지 각도
+        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 180.0))  # 장애물 감지 FOV 180도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
@@ -57,7 +57,7 @@ class LidarAvoidancePlanner:
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
-            rospy.get_param("~max_steering_angle_deg", 60.0)  # 최대 조향각 60도로 추가 확장
+            rospy.get_param("~max_steering_angle_deg", 45.0)  # 회피 조향각 45도로 축소
         )
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
