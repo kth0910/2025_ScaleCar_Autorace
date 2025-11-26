@@ -33,7 +33,7 @@ class LidarAvoidancePlanner:
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.forward_fov = math.radians(rospy.get_param("~forward_fov_deg", 210.0))
         self.max_range = rospy.get_param("~max_range", 8.0)
-        self.safe_distance = rospy.get_param("~safe_distance", 0.35)  # 35cm 안전 거리
+        self.safe_distance = rospy.get_param("~safe_distance", 0.40)  # 35cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
@@ -64,8 +64,8 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터 (재적용)
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.8)  # P이득 감소 (급격한 조향 방지)
-        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.1)  # I이득 추가 (지속적인 오차 보정)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.3)  # P이득 감소 (급격한 조향 방지)
+        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)  # I이득 추가 (지속적인 오차 보정)
         self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.0)  # D이득 증가 (진동 억제 및 부드러움)
         self.prev_error = 0.0
         self.integral_error = 0.0
