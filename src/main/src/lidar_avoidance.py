@@ -569,12 +569,23 @@ class LidarAvoidancePlanner:
         
         # 전방 20도, 0.3m 이내 장애물만 빨간색으로 표시
         if len(obstacle_points) > 0 and len(all_points) > 0:
-            # 모든 포인트의 거리 계산
+            # 모든 포인트의 거리 및 각도 계산
             all_distances = np.linalg.norm(all_points, axis=1)
-            obstacle_detection_range = 1.0  # 1m
-            close_mask = all_distances < obstacle_detection_range  # 0.3m 이내
+            all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            # 60cm 이내인 포인트만 빨간색 마커로 표시
+            obstacle_detection_range = 1.0  # 1m
+            front_angle_limit = self.front_obstacle_angle * 0.5
+            
+            # 거리 및 각도 필터링
+            dist_mask = all_distances < obstacle_detection_range
+            angle_mask = np.abs(all_angles) <= front_angle_limit
+            
+            close_mask = dist_mask & angle_mask
+            
+            # 조건에 맞는 포인트만 빨간색 마커로 표시
+            close_points = all_points[close_mask]
+            
+            # 마커 초기화 (이전 단계에서 삭제된 부분 복구)
             red_marker = Marker()
             red_marker.header = header
             red_marker.ns = "lidar_obstacles"
@@ -589,9 +600,7 @@ class LidarAvoidancePlanner:
             red_marker.color.a = 0.9
             red_marker.lifetime = rospy.Duration(0.2)
             red_marker.points = []
-            
-            # 60cm 이내인 포인트만 선택 (LaserScan과 동일한 위치)
-            close_points = all_points[close_mask]
+
             for x, y in close_points:
                 p = Point()
                 p.x = float(x)
