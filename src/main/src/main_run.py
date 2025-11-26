@@ -142,11 +142,6 @@ class LaneFollower:
         # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중
         rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
         
-        # 라이다 속도 명령 구독 (통합 제어용)
-        self.lidar_target_speed = self.max_drive_speed  # 초기값은 최대 속도
-        self.last_lidar_command_time = 0.0
-        rospy.Subscriber("lidar_avoidance/target_speed", Float64, self._lidar_speed_callback, queue_size=1)
-        
         # 속도 제어 파라미터
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.6)  # m/s
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
@@ -157,6 +152,11 @@ class LaneFollower:
         speed_pwm_param = rospy.get_param("~speed", 2000.0)
         self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 100.0)  # PWM 변화율 (부드러운 변화를 위해 감소)
         self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.3)  # 지수적 스무딩 계수 (0.0~1.0, 작을수록 더 부드러움)
+
+        # 라이다 속도 명령 구독 (통합 제어용)
+        self.lidar_target_speed = self.max_drive_speed  # 초기값은 최대 속도
+        self.last_lidar_command_time = 0.0
+        rospy.Subscriber("lidar_avoidance/target_speed", Float64, self._lidar_speed_callback, queue_size=1)
         # 색상 기반 속도 제어 파라미터
         self.neutral_lane_speed = rospy.get_param(
             "~neutral_lane_speed",
