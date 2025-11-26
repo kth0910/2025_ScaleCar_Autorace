@@ -28,11 +28,6 @@ class SlideWindow:
         rightx_base = np.argmax(right_hist) + midpoint if np.any(right_hist) else int(width * 0.75)
 
         nwindows = 12
-        # 상위 윈도우는 곡률이 심할 때 너무 미리 반응하게 하므로,
-        # 조향 계산에는 하단 윈도우만 우선적으로 사용합니다.
-        # 12개 중 하단 5개(약 40%)만 사용하여 "turns too early" 문제를 더욱 완화합니다.
-        calc_nwindows = 5
-        
         window_height = height // nwindows
         margin = 35
         minpix = 20
@@ -45,10 +40,6 @@ class SlideWindow:
         rightx_current = rightx_base
         left_lane_inds = []
         right_lane_inds = []
-        
-        # 조향 계산용 인덱스 (하단 윈도우만 포함)
-        left_lane_inds_calc = []
-        right_lane_inds_calc = []
 
         if nonzerox.size == 0:
             self.left_exists = False
@@ -79,11 +70,6 @@ class SlideWindow:
 
             left_lane_inds.extend(good_left_inds)
             right_lane_inds.extend(good_right_inds)
-            
-            # 하단 윈도우인 경우 계산용 리스트에도 추가
-            if window < calc_nwindows:
-                left_lane_inds_calc.extend(good_left_inds)
-                right_lane_inds_calc.extend(good_right_inds)
 
             if len(good_left_inds) > minpix:
                 leftx_current = int(np.mean(nonzerox[good_left_inds]))
@@ -95,20 +81,12 @@ class SlideWindow:
         lane_width_px = int(width * self.lane_width_ratio)
 
         if left_exists:
-            # 계산용 픽셀이 충분하면 그것만 사용 (가까운 곳 우선)
-            if len(left_lane_inds_calc) > minpix * 2:
-                left_x = int(np.mean(nonzerox[left_lane_inds_calc]))
-            else:
-                # 가까운 곳에 픽셀이 부족하면 전체 사용
-                left_x = int(np.mean(nonzerox[left_lane_inds]))
+            left_x = int(np.mean(nonzerox[left_lane_inds]))
         else:
             left_x = None
 
         if right_exists:
-            if len(right_lane_inds_calc) > minpix * 2:
-                right_x = int(np.mean(nonzerox[right_lane_inds_calc]))
-            else:
-                right_x = int(np.mean(nonzerox[right_lane_inds]))
+            right_x = int(np.mean(nonzerox[right_lane_inds]))
         else:
             right_x = None
 
