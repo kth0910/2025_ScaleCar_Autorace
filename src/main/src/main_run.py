@@ -38,8 +38,8 @@ class LaneFollower:
         self.steering_gain = self.pid_kp  # backward compatibility
         self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 중앙 정렬 (0.60 → 0.50)
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
-        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.55)  # 좌측 조향 시 더 빠른 반응
-        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.55)  # 우측 조향 시 기존 유지
+        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 더 빠른 반응
+        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.40)  # 우측 조향 시 기존 유지
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
@@ -52,7 +52,7 @@ class LaneFollower:
         self.max_servo_delta_right = rospy.get_param("~max_servo_delta_right", 0.05)  # 우측 조향 시 기존 유지
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
-        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.40)  # 좌측 조향 개선 (0.35 → 0.40)
+        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.65)  # 좌측 조향 개선 (0.35 → 0.40)
         self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
         # 노란 차선 검출 파라미터 (밝기 기반 필터링 없이 색상만 사용)
         self.use_yellow_lane_detection = rospy.get_param("~use_yellow_lane_detection", True)
