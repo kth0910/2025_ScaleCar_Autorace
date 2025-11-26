@@ -913,11 +913,14 @@ class LaneFollower:
             score_left = res_left.max()
             score_right = res_right.max()
             
+            # 디버깅: 점수 로그 출력
+            rospy.loginfo_throttle(0.5, f"Sign Scores -> L: {score_left:.3f}, R: {score_right:.3f}")
+            
             direction = "Unknown"
             match_score = 0.0
             
-            # 임계값 (0.4 이상일 때만 인정)
-            threshold = 0.4
+            # 임계값 (0.25 이상일 때만 인정)
+            threshold = 0.25
             if score_left > threshold and score_left > score_right:
                 direction = "LEFT"
                 match_score = score_left
@@ -931,9 +934,11 @@ class LaneFollower:
             label = f"{direction} ({match_score:.2f})"
             cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
-            # 디버그 창 (ROI 마스크 확인용)
+            # 디버그 창
             if self.enable_viz:
                 cv2.imshow("Sign Arrow Mask", white_resized)
+                cv2.imshow("Template Left", self.template_left)
+                cv2.imshow("Template Right", self.template_right)
 
         if self.enable_viz:
             cv2.imshow("Sign Blue Mask", blue_mask)
