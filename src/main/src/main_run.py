@@ -814,19 +814,31 @@ class LaneFollower:
         pass
 
     def _init_sign_templates(self):
-        """좌/우 화살표 템플릿 생성 (OpenCV 드로잉 이용)"""
+        """좌/우 화살표 템플릿 생성 (곡선형 화살표)"""
         self.sign_template_size = (64, 64)
+        thickness = 10
         
-        # 1. Left Arrow Template
+        # 1. Left Arrow Template (Curved)
         self.template_left = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 화살표 그리기: (Start, End) -> End 쪽에 화살촉
-        # 왼쪽을 가리켜야 하므로 오른쪽에서 왼쪽으로 그립니다.
-        cv2.arrowedLine(self.template_left, (50, 32), (14, 32), 255, 8, tipLength=0.5)
+        # 곡선 그리기 (90도 턴)
+        # Center(12, 52), Radius 20, Arc 270~360 (Top to Right) -> (12,32) to (32,52)
+        cv2.ellipse(self.template_left, (12, 52), (20, 20), 0, 270, 360, 255, thickness)
+        # 수직 스템 (아래쪽)
+        cv2.line(self.template_left, (32, 52), (32, 64), 255, thickness)
+        # 화살촉 (왼쪽)
+        pts_left = np.array([[2, 32], [16, 20], [16, 44]], np.int32)
+        cv2.fillPoly(self.template_left, [pts_left], 255)
         
-        # 2. Right Arrow Template
+        # 2. Right Arrow Template (Curved)
         self.template_right = np.zeros(self.sign_template_size, dtype=np.uint8)
-        # 오른쪽을 가리켜야 하므로 왼쪽에서 오른쪽으로 그립니다.
-        cv2.arrowedLine(self.template_right, (14, 32), (50, 32), 255, 8, tipLength=0.5)
+        # 곡선 그리기 (90도 턴)
+        # Center(52, 52), Radius 20, Arc 180~270 (Left to Top) -> (32,52) to (52,32)
+        cv2.ellipse(self.template_right, (52, 52), (20, 20), 0, 180, 270, 255, thickness)
+        # 수직 스템 (아래쪽)
+        cv2.line(self.template_right, (32, 52), (32, 64), 255, thickness)
+        # 화살촉 (오른쪽)
+        pts_right = np.array([[62, 32], [48, 20], [48, 44]], np.int32)
+        cv2.fillPoly(self.template_right, [pts_right], 255)
 
     def _detect_traffic_sign(self, frame):
         """파란색 원형 표지판 감지 및 화살표 방향 판정"""
