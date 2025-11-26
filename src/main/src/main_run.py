@@ -606,7 +606,7 @@ class LaneFollower:
 
         h, w = frame.shape[:2]
         # 하단 20%만 ROI로 사용
-        roi_top = int(0.8 * h)
+        roi_top = int(0.65 * h)
         roi_bottom = h
         roi_left = 0
         roi_right = w
