@@ -189,10 +189,8 @@ class LaneFollower:
         self.timer = rospy.Timer(rospy.Duration(0.033), self.timer_callback)
 
         # 횡단보도 감지 및 정지 관련 변수
-        self.crosswalk_enabled = True  # 로직 활성화 여부 (한 번만 실행)
-        self.waiting_for_stop = False  # 감지 후 1초 대기 상태
-        self.crosswalk_detected_time = 0.0
-        self.is_crosswalk_stopping = False
+        self.crosswalk_state = "IDLE"  # IDLE, APPROACHING, STOPPING, DONE
+        self.stop_line_seen = False
         self.crosswalk_stop_start_time = 0.0
         self.crosswalk_stop_duration = 5.0       # 5초 정지
 
@@ -235,14 +233,25 @@ class LaneFollower:
             self._setup_trackbars()
             self.initialized = True
 
-        # 횡단보도 감지 (활성화 상태이고, 대기/정지 중이 아닐 때)
-        if self.crosswalk_enabled and not self.waiting_for_stop and not self.is_crosswalk_stopping:
+        # 횡단보도 로직 상태 머신
+        if self.crosswalk_state == "IDLE":
              if self._detect_crosswalk(frame):
-                 self.waiting_for_stop = True
-                 self.crosswalk_detected_time = rospy.get_time()
-                 # 감지 즉시 로직 비활성화 (한 번만 동작)
-                 self.crosswalk_enabled = False 
-                 rospy.loginfo("Crosswalk detected! Waiting 1s before stop.")
+                 self.crosswalk_state = "APPROACHING"
+                 self.stop_line_seen = False
+                 rospy.loginfo("Crosswalk detected! Approaching stop line.")
+        
+        elif self.crosswalk_state == "APPROACHING":
+            # 정지선(가로 막대) 감지
+            has_stop_line = self._detect_stop_line(frame)
+            
+            if has_stop_line:
+                self.stop_line_seen = True
+            
+            # 정지선을 보았다가 사라지면 정지 (차량이 정지선을 통과함)
+            if self.stop_line_seen and not has_stop_line:
+                self.crosswalk_state = "STOPPING"
+                self.crosswalk_stop_start_time = rospy.get_time()
+                rospy.loginfo("Stop line passed (disappeared). Stopping.")
 
         lane_mask = self._create_lane_mask(frame)
         slide_img, center_x, has_lane = self._run_slidewindow(lane_mask)
@@ -532,31 +541,6 @@ class LaneFollower:
         # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
-        # [Override] Red/Blue 색상 검출 시 속도 고정 (라이다 안전 속도 무시)
-        if self.current_detected_color in ["red", "blue"]:
-            rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
-            final_speed_mps = self.current_color_speed_mps
-        
-        # [Override] 횡단보도 정지 로직 (1초 대기 후 정지)
-        if self.waiting_for_stop:
-            if (current_time - self.crosswalk_detected_time) >= 1.0:
-                self.waiting_for_stop = False
-                self.is_crosswalk_stopping = True
-                self.crosswalk_stop_start_time = current_time
-                rospy.loginfo("1s delay passed. Stopping now.")
-        
-        if self.is_crosswalk_stopping:
-            elapsed = current_time - self.crosswalk_stop_start_time
-            if elapsed < self.crosswalk_stop_duration:
-                final_speed_mps = 0.0
-                rospy.loginfo_throttle(1.0, f"Crosswalk Stopping... ({elapsed:.1f}/{self.crosswalk_stop_duration}s)")
-            else:
-                self.is_crosswalk_stopping = False
-                rospy.loginfo("Crosswalk stop finished. Logic disabled permanently.")
-
-        
-        # 4. PWM 변환
-        target_pwm = self._drive_speed_to_pwm(final_speed_mps)
         
         # target_pwm을 범위 내로 확실히 제한 (역회전 방지)
         target_pwm = self._clamp(target_pwm, self.min_pwm, self.max_pwm)
@@ -863,6 +847,60 @@ class LaneFollower:
             # cv2.imshow("Crosswalk Mask", mask)
             
         return is_crosswalk
+
+    def _detect_stop_line(self, frame):
+        """
+        BEV 변환 후 하단부의 가로로 긴 흰색 막대(정지선) 검출
+        """
+        # 1. BEV 변환
+        try:
+            warped = self.warper.warp(frame)
+        except Exception:
+            return False
+            
+        h, w = warped.shape[:2]
+        
+        # 2. ROI 설정 (하단 40% 영역)
+        roi_top = int(h * 0.6)
+        roi = warped[roi_top:, :]
+        
+        # 3. 흰색 영역 추출
+        blur = cv2.GaussianBlur(roi, (5, 5), 0)
+        hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
+        
+        lower_white = np.array([0, 150, 0])
+        upper_white = np.array([180, 255, 255])
+        mask = cv2.inRange(hls, lower_white, upper_white)
+        
+        # 4. Morphology
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        
+        # 5. 윤곽선 검출
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        has_stop_line = False
+        debug_roi = roi.copy() if self.enable_viz else None
+        
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 500: continue
+            
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            
+            # 조건: 가로로 긴 직사각형 (bw > bh * 3)
+            # 그리고 너비가 화면의 일정 비율 이상이어야 함 (예: 30% 이상)
+            if bw > bh * 3 and bw > w * 0.3:
+                has_stop_line = True
+                if self.enable_viz:
+                    cv2.rectangle(debug_roi, (x, y), (x+bw, y+bh), (0, 0, 255), 2)
+                    cv2.putText(debug_roi, "Stop Line", (x, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        
+        if self.enable_viz:
+            cv2.imshow("Stop Line Debug", debug_roi)
+            
+        return has_stop_line
 
     def _reset_line_state(self):
         self.slidewindow.left_exists = False
