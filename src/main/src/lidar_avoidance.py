@@ -64,9 +64,9 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터 (재적용)
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)  # 반응성 확보
-        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.0)  # I항은 신중하게 (0.0 권장)
-        self.pid_kd = rospy.get_param("~lidar_pid_kd", 0.8)  # 진동 억제
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 0.8)  # P이득 감소 (급격한 조향 방지)
+        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.1)  # I이득 추가 (지속적인 오차 보정)
+        self.pid_kd = rospy.get_param("~lidar_pid_kd", 1.5)  # D이득 증가 (진동 억제 및 부드러움)
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
