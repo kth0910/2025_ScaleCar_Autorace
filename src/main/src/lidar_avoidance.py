@@ -216,7 +216,7 @@ class LidarAvoidancePlanner:
             target_angle,
             target_distance,
             selected_score,
-        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_angles)
+        ) = self._select_target(ranges, angles, front_obstacle_detected, obstacle_points)
         
         if target_angle is None:
             # 전방에 경로가 없을 때
@@ -649,81 +649,90 @@ class LidarAvoidancePlanner:
 
     def _select_target(
         self, ranges: np.ndarray, angles: np.ndarray, front_obstacle_detected: bool = False,
-        obstacle_angles: Optional[np.ndarray] = None
+        obstacle_points: Optional[np.ndarray] = None
     ) -> Tuple[Optional[float], float, float]:
-        clearance = np.clip(ranges - self.inflation_margin, 0.0, self.max_range)
-        safe_mask = clearance > self.safe_distance
-        if not np.any(safe_mask):
-            return None, 0.0, 0.0
-
-        norm_clearance = clearance / self.max_range
+        """
+        장애물 마커(obstacle_points)를 기반으로 최적의 경로를 선택하는 로직.
+        여러 후보 경로(조향각)를 생성하고, 각 경로에 대해 장애물과의 충돌 여부 및 거리를 평가하여 점수를 매김.
+        """
+        # 후보 경로 생성 (최대 조향각 범위 내에서 50개 샘플)
+        candidate_angles = np.linspace(-self.max_steering_angle, self.max_steering_angle, 50)
         
-        # 각 방향의 장애물 밀도 계산 (장애물이 가장 적은 곳 선택)
-        obstacle_density = np.zeros_like(angles, dtype=np.float32)
-        if obstacle_angles is not None and len(obstacle_angles) > 0:
-            # 각 경로 각도에 대해 주변 장애물 개수 계산
-            angle_window = math.radians(15.0)  # 각 방향에서 ±15도 범위의 장애물 개수 계산
+        best_score = -float('inf')
+        best_angle = 0.0
+        best_dist = 0.0
+        found_valid_path = False
+
+        # 장애물이 없으면 직진 (또는 중앙 유지)
+        if obstacle_points is None or len(obstacle_points) == 0:
+            return 0.0, self.lookahead_distance, 1.0
+
+        # 벡터화 연산을 위한 준비
+        ox = obstacle_points[:, 0]
+        oy = obstacle_points[:, 1]
+
+        for angle in candidate_angles:
+            # 경로 벡터 (단위 벡터)
+            path_x = math.cos(angle)
+            path_y = math.sin(angle)
             
-            for i, angle in enumerate(angles):
-                # 각도 차이 계산
-                angle_diffs = np.abs(obstacle_angles - angle)
-                # 각도 차이를 [-π, π] 범위로 정규화
-                angle_diffs = np.minimum(angle_diffs, 2 * math.pi - angle_diffs)
-                # 주변 각도 범위 내 장애물 개수
-                nearby_obstacles = np.sum(angle_diffs < angle_window)
-                # 장애물 밀도: 장애물이 많을수록 값이 큼 (0~1 정규화)
-                # 최대 장애물 개수를 10개로 가정하고 정규화
-                obstacle_density[i] = min(1.0, nearby_obstacles / 10.0)
-        else:
-            # 장애물이 없으면 모든 방향의 밀도가 0
-            obstacle_density[:] = 0.0
-        
-        # 장애물이 가장 적은 방향을 선호 (밀도가 낮을수록 점수 높음)
-        # obstacle_density를 역으로 변환: 밀도가 낮을수록 높은 점수
-        obstacle_avoidance_score = 1.0 - obstacle_density  # 장애물이 적을수록 1에 가까움
-        
-        # 전방 장애물이 감지되면 장애물 회피를 최우선으로
-        if front_obstacle_detected:
-            # 장애물 회피를 최우선으로 하되, 안전 거리도 고려
-            effective_clearance_weight = 0.3  # 안전 거리 가중치 감소
-            effective_heading_weight = 0.1   # 방향 선호도 감소
-            effective_obstacle_weight = 0.6  # 장애물 회피 가중치 증가
-        else:
-            effective_clearance_weight = self.clearance_weight
-            effective_heading_weight = self.heading_weight
-            effective_obstacle_weight = 0.3  # 장애물 회피 가중치
-        
-        heading_pref = 1.0 - (np.abs(angles) / (self.forward_fov * 0.5))
-        heading_pref = np.clip(heading_pref, 0.0, 1.0)
-        
-        # 점수 계산: 장애물이 적은 방향을 최우선으로 선택
-        scores = (
-            effective_clearance_weight * norm_clearance
-            + effective_heading_weight * heading_pref
-            + effective_obstacle_weight * obstacle_avoidance_score  # 장애물이 적을수록 높은 점수
-        )
-        
-        scores[~safe_mask] = -np.inf
-        idx = int(np.argmax(scores))
-        if not np.isfinite(scores[idx]):
-            return None, 0.0, 0.0
+            # 1. 경로상 투영 거리 (전방 거리, dot product)
+            dots = ox * path_x + oy * path_y
+            
+            # 2. 경로 수직 거리 (측면 거리, cross product magnitude)
+            crosses = np.abs(path_x * oy - path_y * ox)
+            
+            # 유효한 장애물 필터링:
+            # - 경로 전방에 있고 (dots > 0)
+            # - 고려할 거리(lookahead) 이내에 있는 것
+            valid_mask = (dots > 0) & (dots < self.lookahead_distance)
+            
+            # 충돌 여부 확인:
+            # - 유효한 장애물 중, 측면 거리가 차폭(inflation_margin) 이내인 경우
+            collision_mask = valid_mask & (crosses < self.inflation_margin)
+            
+            if np.any(collision_mask):
+                # 충돌 발생: 가장 가까운 충돌 지점까지의 거리가 주행 가능 거리
+                min_dist = np.min(dots[collision_mask])
+                # 충돌이 발생하는 경로는 점수를 매우 낮게 (거리가 짧을수록 더 낮게)
+                # 하지만 완전히 배제하면 갇혔을 때 아무것도 안하므로, 
+                # 충돌까지의 거리를 점수에 반영하여 "그나마 가장 멀리 갈 수 있는" 충돌 경로라도 선택하게 함
+                score = -1000.0 + min_dist  # 기본적으로 매우 낮은 점수
+            else:
+                # 충돌 없음: 주행 가능 거리는 lookahead_distance
+                min_dist = self.lookahead_distance
+                
+                # 추가 페널티: 충돌은 안하지만 장애물에 너무 가까운 경우
+                # 차폭 + 20cm 여유 공간 이내에 장애물이 있으면 페널티 부과
+                close_mask = valid_mask & (crosses < (self.inflation_margin + 0.2))
+                proximity_penalty = 0.0
+                if np.any(close_mask):
+                    # 가까울수록(crosses가 작을수록) 페널티 증가
+                    proximity_penalty = np.sum(1.0 / (crosses[close_mask] + 0.1))
+                
+                # 점수 계산:
+                # 1. 주행 가능 거리 (클수록 좋음, 여기선 상수)
+                # 2. 조향 각도 (작을수록 좋음 - 직진 선호)
+                # 3. 근접 페널티 (작을수록 좋음)
+                score = (self.clearance_weight * min_dist) - (self.heading_weight * abs(angle)) - (0.1 * proximity_penalty)
+                found_valid_path = True
 
-        target_angle = float(angles[idx])
-        # 라이다 좌표계 180도 회전: 각도에 π 더하기
-        target_angle = target_angle + math.pi
-        # 각도를 [-π, π] 범위로 정규화
-        if target_angle > math.pi:
-            target_angle -= 2 * math.pi
-        elif target_angle < -math.pi:
-            target_angle += 2 * math.pi
-        target_distance = float(min(ranges[idx], self.lookahead_distance))
+            if score > best_score:
+                best_score = score
+                best_angle = angle
+                best_dist = min_dist
         
-        # 선택된 방향의 장애물 밀도 로그
-        selected_density = obstacle_density[idx]
-        rospy.logdebug_throttle(1.0, "Selected angle: %.1f deg, obstacle_density: %.2f, clearance: %.2f", 
-                               math.degrees(target_angle), selected_density, clearance[idx])
+        if not found_valid_path and best_score < -500:
+             # 모든 경로가 충돌하거나 유효하지 않음 -> 정지 신호?
+             # 하지만 여기선 최선의(가장 늦게 충돌하는) 경로를 반환
+             pass
+
+        # 라이다 좌표계 변환 불필요 (이미 라이다 좌표계 기준 계산)
+        # target_angle은 라이다 전방(x축) 기준 각도이므로 그대로 사용
         
-        return target_angle, target_distance, float(scores[idx])
+        rospy.logdebug_throttle(0.5, "Best Angle: %.2f deg, Score: %.2f", math.degrees(best_angle), best_score)
+        
+        return best_angle, best_dist, best_score
 
     # 속도 제어는 main_run.py에서 담당하므로 제거됨
 
