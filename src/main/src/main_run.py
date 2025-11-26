@@ -50,19 +50,16 @@ class LaneFollower:
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
         self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.35)
         self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
-        # 노란 차선 검출 파라미터 (노란 라인 / 검은 바닥 조건에 최적화)
+        # 노란 차선 검출 파라미터 (밝기 기반 필터링 없이 색상만 사용)
         self.use_yellow_lane_detection = rospy.get_param("~use_yellow_lane_detection", True)
         self.yellow_hsv_low = np.array(
-            rospy.get_param("~yellow_hsv_low", [15, 80, 120]),
+            rospy.get_param("~yellow_hsv_low", [15, 50, 50]),
             dtype=np.uint8,
         )
         self.yellow_hsv_high = np.array(
             rospy.get_param("~yellow_hsv_high", [40, 255, 255]),
             dtype=np.uint8,
         )
-        self.yellow_saturation_min = rospy.get_param("~yellow_saturation_min", 80)
-        self.yellow_value_min = rospy.get_param("~yellow_value_min", 120)
-        self.yellow_lab_min = rospy.get_param("~yellow_lab_min", 145)
         self.yellow_kernel_size = rospy.get_param("~yellow_kernel_size", 5)
 
         # 출력 토픽 (기본: 보간기 입력 토픽으로 발행해 단일 퍼블리셔로 정리)
@@ -362,48 +359,19 @@ class LaneFollower:
         return self._apply_roi(lane_mask)
 
     def _yellow_lane_mask(self, frame):
+        """노란색 차선만 검출 (밝기 기반 필터링 없이 색상만 사용)"""
         blur = cv2.GaussianBlur(frame, (5, 5), 0)
         hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-        yellow_mask = cv2.inRange(hsv, self.yellow_hsv_low, self.yellow_hsv_high)
+        # HSV 색상 범위만 사용하여 노란색 검출 (밝기 필터링 없음)
+        mask = cv2.inRange(hsv, self.yellow_hsv_low, self.yellow_hsv_high)
 
-        saturation = hsv[:, :, 1]
-        _, sat_mask = cv2.threshold(
-            saturation,
-            int(self.yellow_saturation_min),
-            255,
-            cv2.THRESH_BINARY,
-        )
-        value = hsv[:, :, 2]
-        _, bright_mask = cv2.threshold(
-            value,
-            int(self.yellow_value_min),
-            255,
-            cv2.THRESH_BINARY,
-        )
-        mask = cv2.bitwise_and(yellow_mask, sat_mask)
-        mask = cv2.bitwise_and(mask, bright_mask)
-
-        lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
-        b_channel = lab[:, :, 2]
-        _, lab_mask = cv2.threshold(
-            b_channel,
-            int(self.yellow_lab_min),
-            255,
-            cv2.THRESH_BINARY,
-        )
-        mask = cv2.bitwise_or(mask, lab_mask)
-
+        # 노이즈 제거를 위한 모폴로지 연산
         kernel_size = max(3, int(round(self.yellow_kernel_size)))
         if kernel_size % 2 == 0:
             kernel_size += 1
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
-        min_pixels_for_yellow = max(1, int(0.3 * self.min_mask_pixels))
-        if cv2.countNonZero(mask) < min_pixels_for_yellow:
-            fallback_mask = self._auto_lane_mask(frame)
-            mask = cv2.bitwise_or(mask, fallback_mask)
 
         return self._apply_roi(mask)
 
