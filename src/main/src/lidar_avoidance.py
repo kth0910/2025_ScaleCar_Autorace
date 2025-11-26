@@ -57,7 +57,7 @@ class LidarAvoidancePlanner:
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
-            rospy.get_param("~max_steering_angle_deg", 60.0)  # 회피 조향각 60도로 축소
+            rospy.get_param("~max_steering_angle_deg", 45.0)  # 회피 조향각 60도로 축소
         )
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
