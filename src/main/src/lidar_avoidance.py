@@ -37,7 +37,7 @@ class LidarAvoidancePlanner:
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.30)  # 차폭 반경 15cm + 추가 여유 15cm = 30cm
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
-        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 1m부터 장애물 인식
+        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.3)  # m/s (장애물 회피 시 속도)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV 180도
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 3)  # 최소 연속 포인트 수 (노이즈 필터링)
@@ -57,7 +57,7 @@ class LidarAvoidancePlanner:
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
-            rospy.get_param("~max_steering_angle_deg", 45.0)  # 회피 조향각 60도로 축소
+            rospy.get_param("~max_steering_angle_deg", 45.0)  # 회피 조향각 45도로 축소
         )
         # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
         self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
@@ -66,13 +66,13 @@ class LidarAvoidancePlanner:
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
         self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.3)  # P이득 감소 (급격한 조향 방지)
         self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)  # I이득 추가 (지속적인 오차 보정)
-        self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.0)  # D이득 증가 (진동 억제 및 부드러움)
+        self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)  # D이득 증가 (진동 억제 및 부드러움)
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
         
         # 조향 관성 (Smoothing) 파라미터
-        self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.8)  # 0.0~1.0 (클수록 관성 큼)
+        self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.9)  # 0.0~1.0 (클수록 관성 큼)
         self.prev_servo_cmd = self.servo_center
 
         # 카메라-라이다 퓨전 설정 (제거됨)
