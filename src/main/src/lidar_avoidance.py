@@ -262,6 +262,11 @@ class LidarAvoidancePlanner:
         ranges = np.array(scan.ranges, dtype=np.float32)
         angles = scan.angle_min + np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
 
+        # 라이다가 180도 돌아가 있다고 가정하고 각도를 보정 (0도가 뒤쪽 -> 180도가 앞쪽)
+        angles = angles + math.pi
+        # 각도를 [-π, π] 범위로 정규화
+        angles = np.arctan2(np.sin(angles), np.cos(angles))
+
         valid = np.isfinite(ranges)
         ranges = ranges[valid]
         angles = angles[valid]

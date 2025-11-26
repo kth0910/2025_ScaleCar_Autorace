@@ -111,6 +111,7 @@ class LaneFollower:
         self._servo_fallback_warned = False
         self.center_pub = rospy.Publisher("/lane_center_x", Float64, queue_size=1)
         self.error_pub = rospy.Publisher("/lane_error", Float64, queue_size=1)
+        self.roi_color_pub = rospy.Publisher("/camera/roi_color", Image, queue_size=1)
 
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
         
@@ -234,7 +235,10 @@ class LaneFollower:
             filtered_center = self.prev_center
         self.prev_center = filtered_center
         self.current_center = filtered_center
-        detected_color = self._detect_bottom_lane_color(frame)
+        self.current_center = filtered_center
+        
+        # ROI 색상 검출 및 시각화 (빨강/파랑/검정/흰색)
+        detected_color = self._process_and_publish_roi(frame)
         self._update_speed_profile_from_color(detected_color)
 
         left_exists = getattr(self.slidewindow, "left_exists", False)
@@ -529,59 +533,105 @@ class LaneFollower:
         
         return self.current_speed_pwm
 
-    def _detect_bottom_lane_color(self, frame):
-        """하단 20% 영역에서 빨간색/파란색 검출"""
+    def _process_and_publish_roi(self, frame):
+        """하단 20% 영역에서 빨간색/파란색/검정색/흰색 검출 및 시각화"""
         if frame is None or frame.size == 0:
             return None
 
         h, w = frame.shape[:2]
         # 하단 20%만 ROI로 사용
-        roi_top = int(0.8 * h)  # 상단 80%부터 시작
-        roi_bottom = h  # 하단까지
-        roi_left = 0  # 전체 너비 사용
+        roi_top = int(0.8 * h)
+        roi_bottom = h
+        roi_left = 0
         roi_right = w
         
-        # 하단 20% 전체 영역에서 색상 검출
-        roi = frame[roi_top:roi_bottom, roi_left:roi_right]
+        roi = frame[roi_top:roi_bottom, roi_left:roi_right].copy()
         if roi.size == 0:
             return None
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        # 빨간색 검출 범위 (HSV에서 빨간색은 0도와 180도 근처에 있음)
+        
+        # 1. 빨간색
         red_lower1 = np.array([0, 50, 50])
         red_upper1 = np.array([10, 255, 255])
         red_lower2 = np.array([170, 50, 50])
         red_upper2 = np.array([180, 255, 255])
-        # 파란색 검출 범위
+        red_mask = cv2.inRange(hsv, red_lower1, red_upper1) | cv2.inRange(hsv, red_lower2, red_upper2)
+        
+        # 2. 파란색
         blue_lower = np.array([100, 50, 50])
         blue_upper = np.array([130, 255, 255])
-
-        red_mask = cv2.inRange(hsv, red_lower1, red_upper1)
-        red_mask = cv2.bitwise_or(red_mask, cv2.inRange(hsv, red_lower2, red_upper2))
         blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+        
+        # 3. 흰색 (낮은 채도, 높은 명도)
+        white_lower = np.array([0, 0, 200])
+        white_upper = np.array([180, 50, 255])
+        white_mask = cv2.inRange(hsv, white_lower, white_upper)
+        
+        # 4. 검정색 (매우 낮은 명도)
+        black_lower = np.array([0, 0, 0])
+        black_upper = np.array([180, 255, 50])
+        black_mask = cv2.inRange(hsv, black_lower, black_upper)
 
+        # 노이즈 제거
         kernel = np.ones((3, 3), np.uint8)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
+        white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
 
+        # 결과 시각화
+        debug_roi = roi.copy()
+        
+        # 컨투어 그리고 라벨링
+        contours_red, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_blue, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_white, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours_black, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        cv2.drawContours(debug_roi, contours_red, -1, (0, 0, 255), 2)
+        cv2.drawContours(debug_roi, contours_blue, -1, (255, 0, 0), 2)
+        cv2.drawContours(debug_roi, contours_white, -1, (255, 255, 255), 2)
+        cv2.drawContours(debug_roi, contours_black, -1, (0, 0, 0), 2)
+        
+        # 픽셀 수 계산 및 가장 지배적인 색상 결정
         roi_area = roi.shape[0] * roi.shape[1]
-        if roi_area == 0:
-            return None
-        detection_ratio = self._clamp(self.color_detection_ratio, 0.0, 1.0)
-        pixel_threshold = max(1, int(roi_area * detection_ratio))
-
+        pixel_threshold = int(roi_area * 0.02)  # 2% 이상
+        
         red_pixels = cv2.countNonZero(red_mask)
         blue_pixels = cv2.countNonZero(blue_mask)
-
+        white_pixels = cv2.countNonZero(white_mask)
+        black_pixels = cv2.countNonZero(black_mask)
+        
         candidates = []
-        if red_pixels >= pixel_threshold:
-            candidates.append(("red", red_pixels))
-        if blue_pixels >= pixel_threshold:
-            candidates.append(("blue", blue_pixels))
+        if red_pixels >= pixel_threshold: candidates.append(("red", red_pixels))
+        if blue_pixels >= pixel_threshold: candidates.append(("blue", blue_pixels))
+        if white_pixels >= pixel_threshold: candidates.append(("white", white_pixels))
+        if black_pixels >= pixel_threshold: candidates.append(("black", black_pixels))
+        
+        detected = "none"
+        if candidates:
+            detected = max(candidates, key=lambda x: x[1])[0]
+            
+        # 텍스트 표시
+        cv2.putText(debug_roi, f"Detected: {detected}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(debug_roi, f"R:{red_pixels} B:{blue_pixels} W:{white_pixels} K:{black_pixels}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        if not candidates:
-            return None
-        return max(candidates, key=lambda item: item[1])[0]
+        # 이미지 발행
+        try:
+            msg = self.bridge.cv2_to_imgmsg(debug_roi, "bgr8")
+            self.roi_color_pub.publish(msg)
+        except Exception:
+            pass
+            
+        # 화면 출력
+        if self.enable_viz:
+            cv2.imshow("ROI Colors", debug_roi)
+            
+        # 기존 로직과의 호환성을 위해 red/blue만 반환 (속도 제어용)
+        if detected in ["red", "blue"]:
+            return detected
+        return None
 
     def _update_speed_profile_from_color(self, detected_color):
         if detected_color == "red":
