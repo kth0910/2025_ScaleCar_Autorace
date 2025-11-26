@@ -500,18 +500,17 @@ class LaneFollower:
         if self.closest_obstacle is not None and (current_time - self.last_obstacle_time) < 0.5:
             closest = self.closest_obstacle
             
-            # 거리 기반 속도 감소: 30cm부터 점진적으로 감소, 15cm에서 완전 정지
-            if closest <= self.hard_stop_distance:
-                # 15cm 이하는 완전 정지
-                lidar_safe_speed_mps = 0.0
-            elif closest < self.speed_reduction_start:
-                # 15cm ~ 1m 구간에서 선형 감소 (최대 0.3m/s에서 0.0m/s로)
-                reduction_range = self.speed_reduction_start - self.hard_stop_distance
-                if reduction_range > 0:
-                    distance_in_range = closest - self.hard_stop_distance
-                    ratio = self._clamp(distance_in_range / reduction_range, 0.0, 1.0)
-                    # 장애물 감지 시 최대 속도는 0.3m/s로 제한
-                    lidar_safe_speed_mps = 0.3 * ratio
+            # 거리 기반 속도 감소: 1m부터 점진적으로 감소하지만 절대 정지하지 않음 (회피 기동 위해)
+            if closest < self.speed_reduction_start:
+                # 1m 이내 진입 시 0.3m/s ~ 0.15m/s(min_drive_speed)로 감속
+                # 거리가 0에 가까워져도 min_drive_speed는 유지
+                ratio = self._clamp(closest / self.speed_reduction_start, 0.0, 1.0)
+                
+                min_avoid_speed = self.min_drive_speed  # 0.15 m/s
+                max_avoid_speed = 0.3   # 0.3 m/s
+                
+                # 거리가 가까울수록 min_avoid_speed에 가까워짐
+                lidar_safe_speed_mps = min_avoid_speed + (max_avoid_speed - min_avoid_speed) * ratio
             
         # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
