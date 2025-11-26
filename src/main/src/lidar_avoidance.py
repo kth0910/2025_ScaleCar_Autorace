@@ -228,7 +228,10 @@ class LidarAvoidancePlanner:
         # 조향각 계산 (속도는 main_run.py에서 제어)
         # PID 제어 제거: target_angle은 에러가 아니라 목표 조향각임. 적분하면 발산함.
         steering_angle = clamp(target_angle, -self.max_steering_angle, self.max_steering_angle)
-        servo_cmd = self.servo_center + self.servo_per_rad * steering_angle
+        
+        # [중요] 조향 방향 반전: 장애물쪽으로 조향하는 문제 해결을 위해 부호 반전
+        # (Left Turn이 Positive Angle인데, 서보 설정이나 라이다 좌표계 문제로 반대로 동작할 수 있음)
+        servo_cmd = self.servo_center - self.servo_per_rad * steering_angle
         servo_cmd = clamp(servo_cmd, self.min_servo, self.max_servo)
 
         self._publish_path(scan.header, steering_angle, target_distance)
