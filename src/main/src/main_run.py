@@ -195,6 +195,10 @@ class LaneFollower:
         self.crosswalk_stop_duration = 7.0       # 7초 정지
 
         rospy.on_shutdown(self._cleanup)
+        
+        # 표지판 인식용 템플릿 초기화
+        self._init_sign_templates()
+        
         rospy.loginfo("LaneFollower initialized.")
 
     def timer_callback(self, event):
@@ -229,9 +233,11 @@ class LaneFollower:
             rospy.logwarn(f"Failed to convert image: {exc}")
             return
 
-        if self.enable_viz and not self.initialized:
             self._setup_trackbars()
             self.initialized = True
+
+        # 표지판 인식 수행
+        self._detect_traffic_sign(frame)
 
         # 횡단보도 로직 상태 머신
         if self.crosswalk_state == "IDLE":
@@ -797,6 +803,128 @@ class LaneFollower:
             pass
 
     def _detect_crosswalk(self, frame):
+        # (기존 코드 유지) ...
+        # 여기서는 _detect_crosswalk 구현 내용을 건드리지 않으므로
+        # 실제 파일의 내용을 그대로 두거나, 이 도구의 특성상
+        # _detect_crosswalk의 끝부분 뒤에 새 메소드를 추가하는 방식을 사용해야 합니다.
+        # 하지만 multi_replace는 기존 내용을 대체하므로, 
+        # _detect_crosswalk 전체를 다시 쓰는 것보다
+        # 파일의 맨 끝(마지막 메소드 뒤)에 추가하는 것이 안전합니다.
+        # 따라서 이 청크는 취소하고, 아래에 새로운 청크로 파일 끝에 추가하겠습니다.
+        pass
+
+    def _init_sign_templates(self):
+        """좌/우 화살표 템플릿 생성 (OpenCV 드로잉 이용)"""
+        self.sign_template_size = (64, 64)
+        
+        # 1. Left Arrow Template
+        self.template_left = np.zeros(self.sign_template_size, dtype=np.uint8)
+        # 화살표 그리기: (Start, End) -> End 쪽에 화살촉
+        # 왼쪽을 가리켜야 하므로 오른쪽에서 왼쪽으로 그립니다.
+        cv2.arrowedLine(self.template_left, (50, 32), (14, 32), 255, 8, tipLength=0.5)
+        
+        # 2. Right Arrow Template
+        self.template_right = np.zeros(self.sign_template_size, dtype=np.uint8)
+        # 오른쪽을 가리켜야 하므로 왼쪽에서 오른쪽으로 그립니다.
+        cv2.arrowedLine(self.template_right, (14, 32), (50, 32), 255, 8, tipLength=0.5)
+
+    def _detect_traffic_sign(self, frame):
+        """파란색 원형 표지판 감지 및 화살표 방향 판정"""
+        if frame is None:
+            return
+
+        # 1. HSV 변환 및 파란색 마스크
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        
+        # 파란색 범위 (표지판용)
+        lower_blue = np.array([90, 100, 70])
+        upper_blue = np.array([140, 255, 255])
+        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        
+        # 노이즈 제거
+        kernel = np.ones((3, 3), np.uint8)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, kernel)
+        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, kernel)
+
+        # 2. 컨투어 검출
+        contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        detected_sign = None
+        max_area = 0
+        
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 500:  # 너무 작은 영역 무시
+                continue
+                
+            perimeter = cv2.arcLength(cnt, True)
+            if perimeter == 0:
+                continue
+                
+            # 원형도(Circularity) 계산: 4 * pi * Area / (Perimeter^2)
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            
+            # 원형 표지판이면 circularity가 1에 가까움 (0.7 이상 허용)
+            if circularity > 0.7:
+                if area > max_area:
+                    max_area = area
+                    detected_sign = cnt
+        
+        if detected_sign is not None:
+            x, y, w, h = cv2.boundingRect(detected_sign)
+            
+            # ROI 추출 (약간의 여백을 두고 자르기)
+            margin = 2
+            x1 = max(0, x - margin)
+            y1 = max(0, y - margin)
+            x2 = min(frame.shape[1], x + w + margin)
+            y2 = min(frame.shape[0], y + h + margin)
+            
+            roi = frame[y1:y2, x1:x2]
+            if roi.size == 0:
+                return
+
+            # 3. 화살표(흰색) 추출
+            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            # 흰색: 채도(S) 낮음, 명도(V) 높음
+            lower_white = np.array([0, 0, 180])
+            upper_white = np.array([180, 60, 255])
+            white_mask = cv2.inRange(roi_hsv, lower_white, upper_white)
+            
+            # 템플릿 매칭을 위해 리사이즈
+            white_resized = cv2.resize(white_mask, self.sign_template_size)
+            
+            # 4. 템플릿 매칭
+            res_left = cv2.matchTemplate(white_resized, self.template_left, cv2.TM_CCOEFF_NORMED)
+            res_right = cv2.matchTemplate(white_resized, self.template_right, cv2.TM_CCOEFF_NORMED)
+            
+            score_left = res_left.max()
+            score_right = res_right.max()
+            
+            direction = "Unknown"
+            match_score = 0.0
+            
+            # 임계값 (0.4 이상일 때만 인정)
+            threshold = 0.4
+            if score_left > threshold and score_left > score_right:
+                direction = "LEFT"
+                match_score = score_left
+            elif score_right > threshold and score_right > score_left:
+                direction = "RIGHT"
+                match_score = score_right
+            
+            # 5. 결과 시각화
+            color = (0, 255, 0) if direction != "Unknown" else (0, 255, 255)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            label = f"{direction} ({match_score:.2f})"
+            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            # 디버그 창 (ROI 마스크 확인용)
+            if self.enable_viz:
+                cv2.imshow("Sign Arrow Mask", white_resized)
+
+        if self.enable_viz:
+            cv2.imshow("Sign Blue Mask", blue_mask)
         """
         BEV 변환 후 흰색 영역 추출 -> 세로로 긴 직사각형(횡단보도 패턴) 검출
         사용자 요청: 
