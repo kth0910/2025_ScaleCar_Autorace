@@ -1009,7 +1009,7 @@ class LaneFollower:
         2. Canny -> HoughLinesP
         3. Filter Horizontal Lines
         4. Group by Y-spacing and X-overlap
-        5. Require >= 3 lines to confirm crosswalk (reject single stop line)
+        5. Require >= 4 lines AND sufficient vertical span to confirm crosswalk
         """
         # 1. BEV Warp
         try:
@@ -1070,7 +1070,7 @@ class LaneFollower:
             current_group = [horizontal_lines[0]]
             
             # Parameters
-            min_gap = 5    # Minimum gap between lines (pixels) - allows top/bottom edges of same bar
+            min_gap = 5    # Minimum gap between lines (pixels)
             max_gap = 100  # Maximum gap
             
             for i in range(1, len(horizontal_lines)):
@@ -1088,15 +1088,20 @@ class LaneFollower:
                         continue
                 
                 # If not linked, check if current group is valid
-                if len(current_group) >= 3:
-                    groups.append(current_group)
+                # Condition: At least 4 lines AND vertical span > 50px
+                if len(current_group) >= 4:
+                    span = current_group[-1]['y'] - current_group[0]['y']
+                    if span > 50:
+                        groups.append(current_group)
                 
                 # Start new group
                 current_group = [line]
                 
             # Check last group
-            if len(current_group) >= 3:
-                groups.append(current_group)
+            if len(current_group) >= 4:
+                span = current_group[-1]['y'] - current_group[0]['y']
+                if span > 50:
+                    groups.append(current_group)
             
         is_crosswalk = len(groups) > 0
         
