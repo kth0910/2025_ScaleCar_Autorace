@@ -189,10 +189,12 @@ class LaneFollower:
         self.timer = rospy.Timer(rospy.Duration(0.033), self.timer_callback)
 
         # 횡단보도 감지 및 정지 관련 변수
-        self.crosswalk_state = "IDLE"  # IDLE, APPROACHING, STOPPING, DONE
+        # 횡단보도 감지 및 정지 관련 변수
+        self.crosswalk_state = "IDLE"  # IDLE, WAITING, STOPPING, DONE
         self.stop_line_seen = False
         self.last_stop_line_time = 0.0  # 정지선 감지 시간 기억 (늦은 횡단보도 감지 대응)
         self.crosswalk_stop_start_time = 0.0
+        self.crosswalk_detected_time = 0.0
         self.crosswalk_stop_duration = 7.0       # 7초 정지
         
         # 표지판 제어 변수
@@ -343,9 +345,15 @@ class LaneFollower:
         # 횡단보도 로직 상태 머신
         if self.crosswalk_state == "IDLE":
              if self._detect_crosswalk(frame):
+                 self.crosswalk_state = "WAITING"
+                 self.crosswalk_detected_time = rospy.get_time()
+                 rospy.loginfo("Crosswalk detected! Waiting 1s before stop.")
+        
+        elif self.crosswalk_state == "WAITING":
+             if rospy.get_time() - self.crosswalk_detected_time > 1.0:
                  self.crosswalk_state = "STOPPING"
                  self.crosswalk_stop_start_time = rospy.get_time()
-                 rospy.loginfo("Crosswalk detected! Stopping immediately.")
+                 rospy.loginfo("1s passed. Stopping now.")
         
         # APPROACHING 상태 제거됨 (즉시 정지)
         
