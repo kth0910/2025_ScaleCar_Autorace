@@ -142,7 +142,13 @@ class LidarAvoidancePlanner:
             self._publish_stop(scan.header, reason="empty_scan")
             return
 
-        closest = float(np.min(ranges))
+        # 속도 제어용 FOV: 전방 90도 (±45도)
+        speed_fov_mask = np.abs(angles) <= math.radians(45.0)
+        if np.any(speed_fov_mask):
+            closest = float(np.min(ranges[speed_fov_mask]))
+        else:
+            closest = float('inf')
+            
         self.clearance_pub.publish(closest)
         
         # 30cm 이하일 때는 정지 (15cm에서 완전 정지)
@@ -267,6 +273,8 @@ class LidarAvoidancePlanner:
         ranges = np.array(scan.ranges, dtype=np.float32)
         angles = scan.angle_min + np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
 
+        # 라이다가 180도 돌아가 있어서 0도가 후방임 -> 180도 회전하여 0도를 전방으로 보정
+        angles = angles + math.pi
         # 각도를 [-π, π] 범위로 정규화
         angles = np.arctan2(np.sin(angles), np.cos(angles))
 
