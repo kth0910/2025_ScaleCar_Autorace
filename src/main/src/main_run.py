@@ -665,9 +665,11 @@ class LaneFollower:
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
         # [Override] 차단기 감지 시 정지 (최우선)
+        # [Override] 차단기 감지 시 정지 (최우선)
         if self.barrier_detected:
-            final_speed_mps = 0.0
-            rospy.logwarn_throttle(1.0, "Barrier detected. Stopping.")
+            self.current_speed_pwm = 0.0
+            rospy.logwarn_throttle(1.0, "Barrier detected. Stopping immediately.")
+            return 0.0
 
         # [Override] Red/Blue 색상 검출 시 속도 고정 (라이다 안전 속도 무시)
         elif self.current_detected_color in ["red", "blue"]:
