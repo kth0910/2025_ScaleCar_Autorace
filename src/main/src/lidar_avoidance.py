@@ -334,8 +334,8 @@ class LidarAvoidancePlanner:
         # 각도 차이 계산 (0도 기준)
         angle_mask = np.abs(angles) <= half_fov
         
-        # 3-2. 거리 필터링 (0.75m) - 약간 완화
-        obstacle_detection_range = 0.5
+        # 3-2. 거리 필터링 (0.60m) - 60cm 이상은 장애물로 판단하지 않음
+        obstacle_detection_range = 0.60
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
@@ -685,7 +685,7 @@ class LidarAvoidancePlanner:
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 0.75  # 0.75m
+            obstacle_detection_range = 0.60  # 0.60m
             
             # 전방 180도(±90도) 필터링
             front_angle_limit = math.radians(180.0) * 0.5
