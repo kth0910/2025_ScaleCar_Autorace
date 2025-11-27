@@ -526,7 +526,32 @@ class LidarAvoidancePlanner:
             
         # 가장 긴 Gap 선택
         gap_lengths = ends - starts
-        best_gap_idx = np.argmax(gap_lengths)
+        
+        # [수정] Gap 선택 시 전방(0도)에 가까운 Gap에 가산점 부여
+        # Score = Length * (1.0 - weight * |angle| / pi)
+        # weight가 0.5이면 180도 옆에 있는 Gap은 길이가 50% 깎임 (전방 선호 강화)
+        best_score = -1.0
+        best_gap_idx = -1
+        
+        center_bias_weight = 0.5 # 전방 선호도 가중치 (조절 가능)
+        
+        for i in range(len(starts)):
+            length = gap_lengths[i]
+            
+            # Gap의 중심 각도 계산
+            s = starts[i]
+            e = ends[i]
+            c_idx = (s + e) // 2
+            c_angle = angles[c_idx]
+            
+            # 점수 계산: 길이 위주지만 전방일수록 점수 높음
+            # 각도가 클수록(전방에서 멀어질수록) 점수 감소
+            angle_penalty = abs(c_angle) / math.pi
+            score = length * (1.0 - center_bias_weight * angle_penalty)
+            
+            if score > best_score:
+                best_score = score
+                best_gap_idx = i
         
         best_start = starts[best_gap_idx]
         best_end = ends[best_gap_idx]
