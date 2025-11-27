@@ -688,7 +688,7 @@ class LidarAvoidancePlanner:
             obstacle_detection_range = 0.75  # 0.75m
             
             # 전방 44도(±22도) 필터링
-            front_angle_limit = math.radians(44.0) * 0.5
+            front_angle_limit = math.radians(90.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
