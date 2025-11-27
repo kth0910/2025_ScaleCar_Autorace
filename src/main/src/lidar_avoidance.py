@@ -240,8 +240,8 @@ class LidarAvoidancePlanner:
         # 조향각 제한
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
-        # [중요] 조향 방향 수정: 데이터는 좌우 반전(Mirror) 상태이므로, 조향도 반대로(빼기) 해야 올바른 방향으로 감
-        target_servo = self.servo_center - self.servo_per_rad * steering_angle
+        # [중요] 조향 방향 수정: 데이터가 정방향(Left=+)이므로, 조향도 정방향(더하기)
+        target_servo = self.servo_center + self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
         # 조향 관성 적용 (Low-Pass Filter)
@@ -314,7 +314,7 @@ class LidarAvoidancePlanner:
         # RViz에서 표시되는 좌표계와 동일하게 변환
         xy = np.zeros((len(ranges), 2), dtype=np.float32)
         xy[:, 0] = ranges * np.cos(angles)  # x = r * cos(theta)
-        xy[:, 1] = -ranges * np.sin(angles) # y = -r * sin(theta) (좌우 반전 보정 for Visualization)
+        xy[:, 1] = ranges * np.sin(angles)  # y = r * sin(theta) (정방향)
         
         # 2단계: 전방 포인트 필터링 (라이다가 180도 회전되어 있다면 전방이 음수 x)
         # detect_obstacles.py 참고: x_forward = -x, y_lateral = y
@@ -609,7 +609,7 @@ class LidarAvoidancePlanner:
                 if r > 0.1:  # 유효한 거리만 표시
                     p = Point()
                     p.x = float(r * math.cos(a))
-                    p.y = float(-r * math.sin(a)) # 좌우 반전 보정 (y = -y)
+                    p.y = float(r * math.sin(a)) # 정방향
                     gap_marker.points.append(p)
         else:
             gap_marker.action = Marker.DELETE
@@ -635,7 +635,7 @@ class LidarAvoidancePlanner:
             r = ranges[goal_idx]
             a = angles[goal_idx]
             goal_marker.pose.position.x = float(r * math.cos(a))
-            goal_marker.pose.position.y = float(-r * math.sin(a)) # 좌우 반전 보정 (y = -y)
+            goal_marker.pose.position.y = float(r * math.sin(a)) # 정방향
             goal_marker.pose.orientation.w = 1.0
         else:
             goal_marker.action = Marker.DELETE
@@ -739,8 +739,8 @@ class LidarAvoidancePlanner:
         marker.scale.y = 0.08
         marker.scale.z = 0.08
         marker.color.a = 0.9
-        # 화살표 방향 보정: 각도 반전
-        display_angle = -steering_angle * self.arrow_angle_scale
+        # 화살표 방향 보정: 정방향
+        display_angle = steering_angle * self.arrow_angle_scale
         
         # 전진 시 파란색으로 표시
         marker.color.r = 0.1
@@ -764,8 +764,8 @@ class LidarAvoidancePlanner:
             travel = distance * ratio
             pose = PoseStamped()
             pose.header = header
-            # 경로 방향 보정: 각도 반전
-            display_angle = -steering_angle * self.arrow_angle_scale
+            # 경로 방향 보정: 정방향
+            display_angle = steering_angle * self.arrow_angle_scale
             pose.pose.position.x = travel * math.cos(display_angle)
             pose.pose.position.y = travel * math.sin(display_angle)
             pose.pose.orientation.z = math.sin(display_angle * 0.5)
