@@ -64,7 +64,7 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 0.7)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.0)
         self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)
         self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)
         self.prev_error = 0.0
@@ -240,8 +240,9 @@ class LidarAvoidancePlanner:
         # 조향각 제한
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
-        # [중요] 조향 방향 수정: 데이터는 좌우 반전(Mirror) 상태이므로, 조향도 반대로(빼기) 해야 올바른 방향으로 감
-        target_servo = self.servo_center - self.servo_per_rad * steering_angle
+        # [중요] 조향 방향 수정: 데이터가 정방향(Left=+)이므로, 조향도 정방향(더하기)
+        # Right Gap(음수 각도) -> Center + (음수) -> 서보 감소 -> 우회전
+        target_servo = self.servo_center + self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
         # 조향 관성 적용 (Low-Pass Filter)
