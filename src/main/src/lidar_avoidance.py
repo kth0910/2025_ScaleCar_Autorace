@@ -324,18 +324,18 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 장애물 검출 - 전방 30도(±15도), 0.7m 이내 무조건 인식
-        # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 30도로 축소
+        # 3단계: 장애물 검출 - 전방 44도(±22도), 0.75m 이내 무조건 인식
+        # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 44도로 변경
         
-        # 3-1. 전방 각도 필터링 (±15도)
-        check_fov = math.radians(30.0) 
+        # 3-1. 전방 각도 필터링 (±22도)
+        check_fov = math.radians(44.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
         angle_mask = np.abs(angles) <= half_fov
         
-        # 3-2. 거리 필터링 (0.7m)
-        obstacle_detection_range = 0.70
+        # 3-2. 거리 필터링 (0.75m) - 약간 완화
+        obstacle_detection_range = 0.75
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
@@ -345,8 +345,8 @@ class LidarAvoidancePlanner:
         obstacle_points = xy[obstacle_mask]
         front_count = len(obstacle_points)
         
-        if len(obstacle_points) == 0:
-            rospy.logdebug_throttle(2.0, "No obstacle points found (Front 160deg, < %.2fm)", obstacle_detection_range)
+        if len(obstacle_points) < self.min_obstacle_points:
+            rospy.logdebug_throttle(2.0, "Ignored noise (count=%d < %d)", len(obstacle_points), self.min_obstacle_points)
             return np.zeros((0, 2), dtype=np.float32), all_points, 0.0
         
         min_dist = float(np.min(distances[obstacle_mask]))
@@ -685,10 +685,10 @@ class LidarAvoidancePlanner:
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 0.70  # 0.7m
+            obstacle_detection_range = 0.75  # 0.75m
             
-            # 전방 30도(±15도) 필터링
-            front_angle_limit = math.radians(30.0) * 0.5
+            # 전방 44도(±22도) 필터링
+            front_angle_limit = math.radians(44.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
