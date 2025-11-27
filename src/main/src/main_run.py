@@ -191,6 +191,7 @@ class LaneFollower:
         # 횡단보도 감지 및 정지 관련 변수
         self.crosswalk_state = "IDLE"  # IDLE, APPROACHING, STOPPING, DONE
         self.stop_line_seen = False
+        self.last_stop_line_time = 0.0  # 정지선 감지 시간 기억 (늦은 횡단보도 감지 대응)
         self.crosswalk_stop_start_time = 0.0
         self.crosswalk_stop_duration = 7.0       # 7초 정지
         
@@ -252,16 +253,18 @@ class LaneFollower:
             self._setup_trackbars()
             self.initialized = True
 
+        # 0. 정지선 상시 감지 (상태와 무관하게 감지하여 메모리)
+        has_stop_line = self._detect_stop_line(frame)
+        if has_stop_line:
+            self.last_stop_line_time = rospy.get_time()
+
         # 표지판 로직 상태 머신
         if self.sign_state == "IDLE":
             # IDLE 상태일 때만 표지판 감지 시도
             self._detect_traffic_sign(frame)
         
         elif self.sign_state == "APPROACHING":
-            # 정지선 감지 (횡단보도 로직의 _detect_stop_line 재사용)
-            # 주의: _detect_stop_line 메소드가 존재해야 함
-            has_stop_line = self._detect_stop_line(frame)
-            
+            # 정지선 감지 (위에서 계산한 has_stop_line 사용)
             if has_stop_line:
                 self.sign_stop_line_seen = True
             
@@ -279,13 +282,12 @@ class LaneFollower:
                  rospy.loginfo("Crosswalk detected! Approaching stop line.")
         
         elif self.crosswalk_state == "APPROACHING":
-            # 정지선(가로 막대) 감지
-            has_stop_line = self._detect_stop_line(frame)
-            
-            if has_stop_line:
+            # 정지선 감지 (has_stop_line) 또는 최근 감지 이력 확인
+            # 횡단보도 감지가 늦어서 이미 정지선을 지났을 경우를 대비해 1.0초 이내 이력 확인
+            if has_stop_line or (rospy.get_time() - self.last_stop_line_time < 1.0):
                 self.stop_line_seen = True
             
-            # 정지선을 보았다가 사라지면 정지 (차량이 정지선을 통과함)
+            # 정지선을 보았다가(혹은 최근에 봤다가) 현재 안보이면 정지
             if self.stop_line_seen and not has_stop_line:
                 self.crosswalk_state = "STOPPING"
                 self.crosswalk_stop_start_time = rospy.get_time()
@@ -1045,7 +1047,7 @@ class LaneFollower:
         
         # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (2개 이상)
         is_crosswalk = False
-        if len(valid_rects) >= 2: # 개수 기준 완화 (3 -> 2)
+        if len(valid_rects) >= 3: # 개수 기준 완화 ()
             # X 좌표 기준으로 정렬 (좌->우로 나열된 패턴인지 확인 가능)
             valid_rects.sort(key=lambda r: r[0])
             
