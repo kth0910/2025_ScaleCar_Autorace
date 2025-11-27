@@ -169,7 +169,7 @@ class LaneFollower:
         self.neutral_lane_speed = rospy.get_param(
             "~neutral_lane_speed", 0.2
         )
-        self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.1)
+        self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.05)
         self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.5)
         self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 이미지 하단 20% 영역 사용
         self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 색상 검출 임계값 (전체 픽셀의 2%)
@@ -557,8 +557,8 @@ class LaneFollower:
         h, w = mask.shape[:2]
         polygon = np.array([[
             (int(0.05 * w), h),
-            (int(0.05 * w), int(0.7 * h)),
-            (int(0.95 * w), int(0.7 * h)),
+            (int(0.05 * w), int(0.8 * h)),
+            (int(0.95 * w), int(0.8 * h)),
             (int(0.95 * w), h),
         ]], dtype=np.int32)
         roi_mask = np.zeros_like(mask)
