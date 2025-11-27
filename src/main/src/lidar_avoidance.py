@@ -533,7 +533,7 @@ class LidarAvoidancePlanner:
         best_score = -1.0
         best_gap_idx = -1
         
-        center_bias_weight = 0.4 # 전방 선호도 가중치 (조절 가능)
+        center_bias_weight = 0.45 # 전방 선호도 가중치 (조절 가능)
         
         for i in range(len(starts)):
             length = gap_lengths[i]
