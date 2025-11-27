@@ -312,8 +312,8 @@ class LaneFollower:
                 frame = cv2.cvtColor(frame_yuv, cv2.COLOR_YUV2BGR_YUYV)
             else:
                 frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
-        except Exception as exc:
-            rospy.logwarn(f"Failed to convert image: {exc}")
+        except Exception:
+            # Suppress conversion errors/warnings
             return
 
         if not self.initialized:
@@ -1150,6 +1150,10 @@ class LaneFollower:
             # Avg X
             xs = [(s[0] + s[2]) / 2 for s in cl]
             avg_x = sum(xs) / len(xs)
+            
+            # X-coordinate filtering (Ignore left side noise)
+            if avg_x < 200:
+                continue
             
             # Must have significant vertical span
             if span > 40: 
