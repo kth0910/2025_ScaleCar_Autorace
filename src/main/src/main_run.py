@@ -33,7 +33,7 @@ class LaneFollower:
 
         # 파라미터
         self.desired_center = rospy.get_param("~desired_center", 305.0)
-        self.pid_kp = rospy.get_param("~steering_kp", -0.006)
+        self.pid_kp = rospy.get_param("~steering_kp", -0.0045)
         self.pid_ki = rospy.get_param("~steering_ki", -0.0001)
         self.pid_kd = rospy.get_param("~steering_kd", -0.006)
         self.steering_gain = self.pid_kp  # backward compatibility
