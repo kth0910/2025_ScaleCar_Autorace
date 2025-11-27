@@ -327,8 +327,8 @@ class LidarAvoidancePlanner:
         # 3단계: 장애물 검출 - 전방 44도(±22도), 0.75m 이내 무조건 인식
         # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 44도로 변경
         
-        # 3-1. 전방 각도 필터링 (±60도) - 회피 중 장애물 놓침 방지
-        check_fov = math.radians(120.0) 
+        # 3-1. 전방 각도 필터링 (±90도) - 전방 180도
+        check_fov = math.radians(180.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
@@ -687,8 +687,8 @@ class LidarAvoidancePlanner:
             
             obstacle_detection_range = 0.75  # 0.75m
             
-            # 전방 120도(±60도) 필터링
-            front_angle_limit = math.radians(120.0) * 0.5
+            # 전방 180도(±90도) 필터링
+            front_angle_limit = math.radians(180.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
