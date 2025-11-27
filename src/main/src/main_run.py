@@ -1120,7 +1120,7 @@ class LaneFollower:
         yellow_pixels = cv2.countNonZero(mask)
         ratio = yellow_pixels / total_pixels
         
-        is_barrier = ratio >= 0.70
+        is_barrier = ratio >= 0.40
         
         if self.enable_viz:
             # 디버깅용 시각화 (ROI 영역 표시)
