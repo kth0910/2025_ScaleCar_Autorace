@@ -328,7 +328,7 @@ class LidarAvoidancePlanner:
         # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 44도로 변경
         
         # 3-1. 전방 각도 필터링 (±22도)
-        check_fov = math.radians(44.0) 
+        check_fov = math.radians(90.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
