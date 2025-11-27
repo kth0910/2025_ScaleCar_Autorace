@@ -64,7 +64,7 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 3.5)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)
         self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)
         self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)
         self.prev_error = 0.0
