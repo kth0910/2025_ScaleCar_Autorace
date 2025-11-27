@@ -258,12 +258,11 @@ class LaneFollower:
         if has_stop_line:
             self.last_stop_line_time = rospy.get_time()
 
-        # 표지판 로직 상태 머신
-        if self.sign_state == "IDLE":
-            # IDLE 상태일 때만 표지판 감지 시도
-            self._detect_traffic_sign(frame)
+        # 표지판 감지 및 시각화 (항상 수행하여 디버깅 창이 멈추지 않게 함)
+        # 내부에서 sign_state == "IDLE"일 때만 상태를 변경함
+        self._detect_traffic_sign(frame)
         
-        elif self.sign_state == "APPROACHING":
+        if self.sign_state == "APPROACHING":
             # 정지선 감지 (위에서 계산한 has_stop_line 사용)
             if has_stop_line:
                 self.sign_stop_line_seen = True
@@ -878,10 +877,13 @@ class LaneFollower:
             return
 
         h, w = frame.shape[:2]
-        # ROI: 중단 20%
+        # ROI: 중단 20% (가로/세로 모두)
         roi_top = int(h * 0.4)
         roi_bottom = int(h * 0.6)
-        roi = frame[roi_top:roi_bottom, :]
+        roi_left = int(w * 0.4)
+        roi_right = int(w * 0.6)
+        
+        roi = frame[roi_top:roi_bottom, roi_left:roi_right]
         
         if roi.size == 0:
             return
@@ -926,6 +928,7 @@ class LaneFollower:
         if detected_sign is not None:
             x, y, w, h_rect = cv2.boundingRect(detected_sign)
             # ROI 좌표를 원본 좌표로 변환
+            x += roi_left
             y += roi_top
             
             # ROI 추출 (약간의 여백을 두고 자르기)
@@ -1059,7 +1062,7 @@ class LaneFollower:
         
         # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (2개 이상)
         is_crosswalk = False
-        if len(valid_rects) >= 3: # 개수 기준 완화 ()
+        if len(valid_rects) >= 5: # 개수 기준 완화 ()
             # X 좌표 기준으로 정렬 (좌->우로 나열된 패턴인지 확인 가능)
             valid_rects.sort(key=lambda r: r[0])
             
