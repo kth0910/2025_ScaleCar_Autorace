@@ -35,7 +35,7 @@ class LaneFollower:
         self.desired_center = rospy.get_param("~desired_center", 305.0)
         self.pid_kp = rospy.get_param("~steering_kp", -0.0045)
         self.pid_ki = rospy.get_param("~steering_ki", -0.0001)
-        self.pid_kd = rospy.get_param("~steering_kd", -0.003)
+        self.pid_kd = rospy.get_param("~steering_kd", -0.005)
         self.steering_gain = self.pid_kp  # backward compatibility
         self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 조향 중앙 정렬 오프셋
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
@@ -306,7 +306,12 @@ class LaneFollower:
 
     def image_callback(self, msg):
         try:
-            frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            if msg.encoding == "yuyv" or msg.encoding == "yuv422":
+                # Use passthrough and manual conversion to avoid swscaler warnings
+                frame_yuv = self.bridge.imgmsg_to_cv2(msg, "passthrough")
+                frame = cv2.cvtColor(frame_yuv, cv2.COLOR_YUV2BGR_YUYV)
+            else:
+                frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as exc:
             rospy.logwarn(f"Failed to convert image: {exc}")
             return
@@ -1056,10 +1061,10 @@ class LaneFollower:
     def _detect_crosswalk(self, frame):
         """
         Detect Crosswalk: Vertical rectangles aligned horizontally (Zebra crossing)
-        1. BEV Warp
-        2. Canny -> HoughLinesP
-        3. Filter Vertical Lines
-        4. Group by X-spacing (Horizontal alignment)
+        Improved Logic:
+        1. Detect Vertical Lines.
+        2. Cluster segments by X-coordinate (merge broken lines).
+        3. Check for a sequence of these vertical edges with appropriate spacing.
         """
         # 1. BEV Warp
         try:
@@ -1069,19 +1074,17 @@ class LaneFollower:
 
         # 2. Edge Detection
         gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        # Apply Gaussian Blur to reduce noise
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
+        edges = cv2.Canny(blur, 30, 120) # Lower thresholds
 
         # 3. Hough Lines
-        # Detect lines
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi / 180,
-            threshold=30,
-            minLineLength=20,
-            maxLineGap=10
+            threshold=20,          # Lower threshold
+            minLineLength=15,      # Shorter lines accepted
+            maxLineGap=20          # Larger gap to connect segments
         )
 
         if lines is None:
@@ -1091,75 +1094,107 @@ class LaneFollower:
             return False
 
         # 4. Filter Vertical Lines
-        vertical_lines = []
+        vertical_segments = []
         for line in lines:
             x1, y1, x2, y2 = line[0]
             dx = x2 - x1
             dy = y2 - y1
             angle = np.degrees(np.arctan2(dy, dx))
             
-            # Check if vertical (within +/- 20 degrees of 90 or -90)
-            # abs(angle) is 0..180. Vertical is near 90.
-            if 70 < abs(angle) < 110:
-                # Normalize y1 < y2
-                if y1 > y2:
-                    y1, y2 = y2, y1
-                vertical_lines.append({
-                    'x': (x1 + x2) / 2,
-                    'y_start': y1,
-                    'y_end': y2,
-                    'length': abs(dy)
-                })
+            # Vertical check: near +/- 90 degrees
+            if 60 < abs(angle) < 120: # Relaxed angle
+                vertical_segments.append(line[0])
 
-        # Sort by X position
-        vertical_lines.sort(key=lambda l: l['x'])
+        if not vertical_segments:
+            return False
 
-        # 5. Grouping (Find chains of lines with consistent X spacing)
-        groups = []
-        if len(vertical_lines) >= 4: # Need at least 4 lines (2 stripes)
-            current_group = [vertical_lines[0]]
+        # 5. Cluster by X-coordinate
+        # Group segments that are vertically aligned (similar X)
+        vertical_segments.sort(key=lambda l: (l[0] + l[2]) / 2) # Sort by avg X
+        
+        clusters = []
+        current_cluster = []
+        
+        # X tolerance to consider segments as part of the same vertical edge
+        x_tolerance = 15 
+        
+        for seg in vertical_segments:
+            seg_x = (seg[0] + seg[2]) / 2
             
-            min_gap = 10   # Minimum gap between vertical edges
-            max_gap = 150  # Maximum gap (stripe width + space)
+            if not current_cluster:
+                current_cluster.append(seg)
+                continue
+                
+            last_seg = current_cluster[-1]
+            last_x = (last_seg[0] + last_seg[2]) / 2
             
-            for i in range(1, len(vertical_lines)):
-                line = vertical_lines[i]
-                prev_line = current_group[-1]
-                
-                dx = line['x'] - prev_line['x']
-                
-                # Check X gap
-                if min_gap <= dx <= max_gap:
-                    # Check Y alignment (overlap in Y)
-                    overlap = min(line['y_end'], prev_line['y_end']) - max(line['y_start'], prev_line['y_start'])
-                    if overlap > 20: # Significant vertical overlap
-                        current_group.append(line)
-                        continue
-                
-                # If not linked, check if current group is valid
-                if len(current_group) >= 6: # Increased threshold for robustness
-                     groups.append(current_group)
-                
-                current_group = [line]
-                
-            if len(current_group) >= 6:
-                groups.append(current_group)
+            if abs(seg_x - last_x) <= x_tolerance:
+                current_cluster.append(seg)
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [seg]
+        
+        if current_cluster:
+            clusters.append(current_cluster)
             
-        is_crosswalk = len(groups) > 0
+        # 6. Analyze Clusters (Valid Vertical Edges)
+        valid_edges = []
+        for cl in clusters:
+            # Calculate total vertical span
+            ys = [min(s[1], s[3]) for s in cl]
+            ye = [max(s[1], s[3]) for s in cl]
+            min_y = min(ys)
+            max_y = max(ye)
+            span = max_y - min_y
+            
+            # Avg X
+            xs = [(s[0] + s[2]) / 2 for s in cl]
+            avg_x = sum(xs) / len(xs)
+            
+            # Must have significant vertical span
+            if span > 40: 
+                valid_edges.append({'x': avg_x, 'min_y': min_y, 'max_y': max_y})
+
+        # 7. Check for Horizontal Pattern (Sequence of Edges)
+        # We need at least 4 edges (approx 2 stripes)
+        if len(valid_edges) < 4:
+            if self.enable_viz:
+                debug_img = warped.copy()
+                for edge in valid_edges:
+                    cv2.line(debug_img, (int(edge['x']), int(edge['min_y'])), (int(edge['x']), int(edge['max_y'])), (0, 255, 255), 2)
+                cv2.imshow("Crosswalk Debug", debug_img)
+            return False
+            
+        # Check spacing between edges
+        # Stripes have width, spaces have width. Both create gaps between edges.
+        # We look for a consistent chain of edges.
+        
+        consecutive_count = 1
+        max_consecutive = 1
+        
+        for i in range(1, len(valid_edges)):
+            dx = valid_edges[i]['x'] - valid_edges[i-1]['x']
+            
+            # Expected gap: 20px ~ 150px
+            if 20 <= dx <= 150:
+                consecutive_count += 1
+            else:
+                max_consecutive = max(max_consecutive, consecutive_count)
+                consecutive_count = 1
+                
+        max_consecutive = max(max_consecutive, consecutive_count)
+        
+        is_crosswalk = max_consecutive >= 4
         
         if self.enable_viz:
             debug_img = warped.copy()
-            # Draw all vertical lines (Blue)
-            for l in vertical_lines:
-                cv2.line(debug_img, (int(l['x']), int(l['y_start'])), (int(l['x']), int(l['y_end'])), (255, 0, 0), 1)
-            
-            # Draw detected groups (Green)
-            for grp in groups:
-                for l in grp:
-                    cv2.line(debug_img, (int(l['x']), int(l['y_start'])), (int(l['x']), int(l['y_end'])), (0, 255, 0), 2)
+            for edge in valid_edges:
+                cv2.line(debug_img, (int(edge['x']), int(edge['min_y'])), (int(edge['x']), int(edge['max_y'])), (0, 255, 0), 2)
             
             if is_crosswalk:
-                cv2.putText(debug_img, "Crosswalk!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(debug_img, f"CROSSWALK! (Count: {max_consecutive})", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            else:
+                cv2.putText(debug_img, f"Edges: {max_consecutive}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                 
             cv2.imshow("Crosswalk Debug", debug_img)
             cv2.imshow("Crosswalk Edges", edges)
