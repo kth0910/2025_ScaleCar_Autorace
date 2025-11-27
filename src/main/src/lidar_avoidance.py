@@ -316,18 +316,18 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: 장애물 검출 - 전방 160도(±80도), 0.8m 이내 무조건 인식
-        # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지
+        # 3단계: 장애물 검출 - 전방 30도(±15도), 0.7m 이내 무조건 인식
+        # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 30도로 축소
         
-        # 3-1. 전방 각도 필터링 (±80도)
-        check_fov = math.radians(160.0) 
+        # 3-1. 전방 각도 필터링 (±15도)
+        check_fov = math.radians(30.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
         angle_mask = np.abs(angles) <= half_fov
         
-        # 3-2. 거리 필터링 (0.8m)
-        obstacle_detection_range = 0.80
+        # 3-2. 거리 필터링 (0.7m)
+        obstacle_detection_range = 0.70
         distances = np.linalg.norm(xy, axis=1)
         distance_mask = distances < obstacle_detection_range
         
@@ -671,16 +671,16 @@ class LidarAvoidancePlanner:
         """
         marker_array = MarkerArray()
         
-        # 전방 20도, 0.3m 이내 장애물만 빨간색으로 표시
+        # 전방 30도, 0.7m 이내 장애물만 빨간색으로 표시
         if len(obstacle_points) > 0 and len(all_points) > 0:
             # 모든 포인트의 거리 및 각도 계산
             all_distances = np.linalg.norm(all_points, axis=1)
             all_angles = np.arctan2(all_points[:, 1], all_points[:, 0])
             
-            obstacle_detection_range = 0.80  # 0.8m
+            obstacle_detection_range = 0.70  # 0.7m
             
-            # 전방 160도(±80도) 필터링
-            front_angle_limit = math.radians(160.0) * 0.5
+            # 전방 30도(±15도) 필터링
+            front_angle_limit = math.radians(30.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
