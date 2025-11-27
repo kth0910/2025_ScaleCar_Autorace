@@ -241,7 +241,7 @@ class LidarAvoidancePlanner:
         steering_angle = clamp(pid_steering_angle, -self.max_steering_angle, self.max_steering_angle)
         
         # [중요] 조향 방향 수정: 데이터가 정방향(Left=+)이므로, 조향도 정방향(더하기)
-        target_servo = self.servo_center + self.servo_per_rad * steering_angle
+        target_servo = self.servo_center - self.servo_per_rad * steering_angle
         target_servo = clamp(target_servo, self.min_servo, self.max_servo)
         
         # 조향 관성 적용 (Low-Pass Filter)
