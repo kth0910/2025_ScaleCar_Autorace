@@ -23,23 +23,23 @@ def clamp(value: float, low: float, high: float) -> float:
 
 class LidarAvoidancePlanner:
     """
-    LaserScan 기반의 장애물 감지 및 단순 로컬 플래너.
-    전방 FOV에서 가장 안전한 방향을 선택해 가깝게 Ackermann 및
-    직접 PWM/서보 명령을 동시에 발행하고, RViz 시각화를 위해
-    Marker/Path 토픽을 제공한다.
+    LaserScan 기반의 장애물 감지 및 로컬 플래너.
+    전방 FOV에서 가장 안전한 경로(Gap)를 찾아 조향 명령(steering_cmd)을 발행한다.
+    속도 제어는 main_run.py에 위임하며, 비상 정지 상황 등에서만 ackermann_cmd를 발행할 수 있다.
+    RViz 시각화를 위한 Marker/Path 토픽을 제공한다.
     """
 
     def __init__(self) -> None:
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.forward_fov = math.radians(rospy.get_param("~forward_fov_deg", 210.0))
         self.max_range = rospy.get_param("~max_range", 8.0)
-        self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 35cm 안전 거리
+        self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 50cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.35)  # 0.45m는 너무 커서 길을 막음 -> 0.35m로 완화
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.35)  # 장애물 확장 마진 (0.35m)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
-        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 1m부터 장애물 인식
+        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 0.7m 이내를 장애물로 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
-        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV 180도
+        self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 4)  # 최소 연속 포인트 수 (노이즈 필터링)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
@@ -53,20 +53,20 @@ class LidarAvoidancePlanner:
         self.ackermann_topic = rospy.get_param("~ackermann_topic", "/ackermann_cmd")
         # 속도 제어는 main_run.py에서 담당하므로 제거
         self.servo_center = rospy.get_param("~servo_center", 0.53)
-        self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.95)  # 라디안 당 서보 변화량 (0.28 -> 0.95로 대폭 상향하여 조향각 확보)
+        self.servo_per_rad = rospy.get_param("~servo_per_rad", 0.95)  # 라디안 당 서보 변화량
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)  # 서보 값은 항상 0~1 범위
         self.max_steering_angle = math.radians(
-            rospy.get_param("~max_steering_angle_deg", 45.0)  # 회피 조향각 45도로 축소
+            rospy.get_param("~max_steering_angle_deg", 45.0)  # 최대 회피 조향각 45도
         )
-        # 화살표 표시 각도 스케일 (서보 각도보다 작게 표시)
-        self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)  # 서보 각도의 70%로 표시
+        # 화살표 표시 각도 스케일 (시각화용)
+        self.arrow_angle_scale = rospy.get_param("~arrow_angle_scale", 0.7)
 
-        # PID 제어 파라미터 (재적용)
+        # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.3)  # P이득 감소 (급격한 조향 방지)
-        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)  # I이득 추가 (지속적인 오차 보정)
-        self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)  # D이득 증가 (진동 억제 및 부드러움)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.3)
+        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)
+        self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
@@ -75,7 +75,7 @@ class LidarAvoidancePlanner:
         self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.9)  # 0.0~1.0 (클수록 관성 큼)
         self.prev_servo_cmd = self.servo_center
 
-        # 카메라-라이다 퓨전 설정 (제거됨)
+        # 카메라-라이다 퓨전 설정 (현재 미사용)
         self.enable_camera_fusion = False
         
         # ROS I/O
@@ -88,8 +88,7 @@ class LidarAvoidancePlanner:
             queue_size=1,
         )
         # 카메라 구독 제거됨
-        # 속도 제어는 main_run.py에서 담당하므로 제거
-        # 조향만 제어
+        # 속도 제어는 main_run.py에서 담당하므로 이 노드는 조향 명령만 발행
         self.steering_pub = None
         self.ackermann_pub = None
         self.marker_pub = rospy.Publisher(
@@ -158,9 +157,9 @@ class LidarAvoidancePlanner:
             # 15cm ~ 30cm: 감속 경고만 (속도 제어는 main_run.py에서 수행)
             rospy.logwarn_throttle(1.0, "Obstacle very close (%.2fm). Speed reduction active.", closest)
 
-        # 카메라 퓨전 적용
-        # obstacle_points: 회피 로직용 (60cm 이내만)
-        # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일)
+        # 장애물 포인트 수집
+        # obstacle_points: 회피 로직용 (설정된 범위 이내)
+        # all_points: 마커 표시용 (모든 포인트)
         obstacle_points, all_points, lidar_confidence = self._collect_obstacle_points(ranges, angles, scan.header)
                     # if len(camera_obstacles) > 0:
                     #     obstacle_points = np.vstack([obstacle_points, camera_obstacles]) if len(obstacle_points) > 0 else camera_obstacles
@@ -317,7 +316,7 @@ class LidarAvoidancePlanner:
         # all_points: 마커 표시용 (모든 포인트, LaserScan과 동일하게 표시)
         all_points = xy
         
-        # 3단계: [검증 1] 검출 조건 단순화 - 전방 160도(±80도), 0.8m 이내 무조건 인식
+        # 3단계: 장애물 검출 - 전방 160도(±80도), 0.8m 이내 무조건 인식
         # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지
         
         # 3-1. 전방 각도 필터링 (±80도)
@@ -444,11 +443,11 @@ class LidarAvoidancePlanner:
         self, ranges: np.ndarray, angles: np.ndarray, header=None
     ) -> Tuple[Optional[float], float, float]:
         """
-        Follow-the-Gap Method (FGM) 강화 버전
+        Follow-the-Gap Method (FGM) 기반 경로 선택
         1. 전처리 (Smoothing)
-        2. Safety Bubble 적용
+        2. Safety Bubble 적용 (장애물 부풀리기)
         3. Max Gap 찾기
-        4. Goal Point 선택 (단순 중앙이 아닌, 더 깊은 곳으로 유도)
+        4. Goal Point 선택 (Gap 내에서 가장 깊은 지점과 중앙의 절충)
         """
         # 1. 전처리
         proc_ranges = np.array(ranges, copy=True)
@@ -534,7 +533,7 @@ class LidarAvoidancePlanner:
         rospy.loginfo_throttle(0.5, "FGM Status: Found %d gaps. Best Gap: %.1f deg (approx %.2fm)", 
                                len(starts), gap_width_deg, gap_width_m)
         
-        # 4. Goal Point 선택 (강화된 로직)
+        # 4. Goal Point 선택
         # 단순히 중앙을 선택하는 것이 아니라, Gap 내에서 가장 깊은(멀리 있는) 지점을 향해 가중치를 둠
         # 이는 장애물 구간 끝에서 탈출할 때 유리함
         gap_indices = np.arange(best_start, best_end)
@@ -666,9 +665,9 @@ class LidarAvoidancePlanner:
 
     def _publish_obstacle_markers(self, header, all_points: np.ndarray, obstacle_points: np.ndarray) -> None:
         """
-        모든 포인트를 표시하되, 60cm 이내인 것만 빨간색으로 표시.
-        all_points: LaserScan의 모든 포인트 (흰 마커와 동일한 위치)
-        obstacle_points: 60cm 이내 장애물 포인트 (빨간색으로 표시)
+        모든 포인트를 표시하되, 설정된 거리 이내인 것만 빨간색으로 표시.
+        all_points: LaserScan의 모든 포인트 (흰 마커)
+        obstacle_points: 장애물로 인식된 포인트 (빨간색 마커)
         """
         marker_array = MarkerArray()
         

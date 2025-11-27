@@ -19,7 +19,8 @@ from slidewindow import SlideWindow
 
 class LaneFollower:
     """
-    카메라 영상에서 차선을 감지하고 조향/속도를 직접 퍼블리시하는 단순 주행 노드
+    카메라 기반 차선 추종을 기본으로 하며, 
+    라이다 장애물 회피, 횡단보도 정지, 표지판 인식 기능을 통합한 주행 노드
     """
 
     TRACKBAR_WINDOW = "Lane Threshold Tuner"
@@ -36,10 +37,10 @@ class LaneFollower:
         self.pid_ki = rospy.get_param("~steering_ki", -0.0001)
         self.pid_kd = rospy.get_param("~steering_kd", -0.00200)
         self.steering_gain = self.pid_kp  # backward compatibility
-        self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 중앙 정렬 (0.60 → 0.50)
+        self.steering_offset = rospy.get_param("~steering_offset", 0.50)  # 조향 중앙 정렬 오프셋
         self.steering_smoothing = rospy.get_param("~steering_smoothing", 0.55)
-        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 더 빠른 반응
-        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.40)  # 우측 조향 시 기존 유지
+        self.steering_smoothing_left = rospy.get_param("~steering_smoothing_left", 0.40)  # 좌측 조향 시 반응성 향상
+        self.steering_smoothing_right = rospy.get_param("~steering_smoothing_right", 0.40)  # 우측 조향 시 반응성 향상
         self.min_servo = rospy.get_param("~min_servo", 0.0)
         self.max_servo = rospy.get_param("~max_servo", 1.0)
         self.center_smoothing = rospy.get_param("~center_smoothing", 0.4)
@@ -52,8 +53,8 @@ class LaneFollower:
         self.max_servo_delta_right = rospy.get_param("~max_servo_delta_right", 0.05)  # 우측 조향 시 기존 유지
         self.min_mask_pixels = rospy.get_param("~min_mask_pixels", 600)
         self.integral_limit = rospy.get_param("~steering_integral_limit", 500.0)
-        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.65)  # 좌측 조향 개선 (0.35 → 0.40)
-        self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)
+        self.single_left_ratio = rospy.get_param("~single_left_ratio", 0.65)  # 한쪽 차선만 보일 때의 조향 비율 (좌측)
+        self.single_right_ratio = rospy.get_param("~single_right_ratio", 0.65)  # 한쪽 차선만 보일 때의 조향 비율 (우측)
         # 노란 차선 검출 파라미터 (밝기 기반 필터링 없이 색상만 사용)
         self.use_yellow_lane_detection = rospy.get_param("~use_yellow_lane_detection", True)
         self.yellow_hsv_low = np.array(
@@ -116,12 +117,11 @@ class LaneFollower:
 
         rospy.Subscriber("usb_cam/image_rect_color", Image, self.image_callback, queue_size=1)
         
-        # 라이다 회피 우선: lidar_avoidance가 제어 중인지 확인
-        # lidar_avoidance가 제어 중인지 나타내는 토픽 구독
+        # 라이다 회피 우선: lidar_avoidance 노드가 제어 중인지 확인
         self.lidar_controlling = False
         self.last_lidar_servo_time = 0.0
-        self.lidar_timeout = 0.5  # 0.5초 동안 라이다 제어가 없으면 카메라 제어 사용
-        self.last_servo_publish_time = 0.0  # 자신이 발행한 시간 추적
+        self.lidar_timeout = 0.5  # 0.5초 동안 라이다 제어 신호가 없으면 카메라 제어로 복귀
+        self.last_servo_publish_time = 0.0  # 마지막으로 서보 명령을 발행한 시간
 
         self.enable_viz = rospy.get_param("~enable_viz", True)
         if not self.enable_viz:
@@ -141,20 +141,20 @@ class LaneFollower:
         self.prev_time = rospy.get_time()
         self.initialized = False
         
-        # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중
+        # 라이다 제어 감지: lidar_avoidance가 /ackermann_cmd를 발행하면 라이다 제어 중으로 판단
         rospy.Subscriber("/ackermann_cmd", AckermannDriveStamped, self._lidar_ackermann_callback, queue_size=1)
         
         # 속도 제어 파라미터
-        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.75)  # m/s (0.7m/s 지원을 위해 상향)
+        self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.75)  # m/s
         self.min_drive_speed = rospy.get_param("~min_drive_speed", 0.15)  # m/s
-        self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM (3000 ~ 0.65m/s)
+        self.max_pwm = rospy.get_param("~max_pwm", 3000.0)  # ERPM
         self.min_pwm = rospy.get_param("~min_pwm", 0.0)  # ERPM (0 = Stop)
         self.min_moving_pwm = rospy.get_param("~min_moving_pwm", 900.0)  # ERPM (최소 구동 토크)
-        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 1.0)  # 1m부터 속도 감소
-        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
+        self.speed_reduction_start = rospy.get_param("~speed_reduction_start", 1.0)  # 장애물 1m 전방부터 감속 시작
+        self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm 이내 진입 시 완전 정지
         speed_pwm_param = rospy.get_param("~speed", 1500.0)
-        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 5000.0)  # PWM 변화율 (빠른 반응을 위해 대폭 상향)
-        self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.8)  # 지수적 스무딩 계수 (반응성 향상)
+        self.speed_smoothing_rate = rospy.get_param("~speed_smoothing_rate", 5000.0)  # PWM 변화율 제한
+        self.speed_smoothing_factor = rospy.get_param("~speed_smoothing_factor", 0.8)  # 지수적 스무딩 계수
 
         # 라이다 장애물 거리 구독 (속도 제어용)
         self.closest_obstacle = None
@@ -171,8 +171,8 @@ class LaneFollower:
         )
         self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
         self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.7)
-        self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 하단 20%만 사용
-        self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 검출 임계값 (2%로 낮춤)
+        self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 이미지 하단 20% 영역 사용
+        self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 색상 검출 임계값 (전체 픽셀의 2%)
         self.current_color_speed_mps = self._clamp(
             self.neutral_lane_speed, self.min_drive_speed, self.max_drive_speed
         )
@@ -213,12 +213,13 @@ class LaneFollower:
         target_pwm = self._compute_integrated_speed()
         self._publish_speed_command(target_pwm)
 
-        # 2. 조향 제어 (우선순위 로직 수정)
+        # 2. 조향 제어 우선순위 로직
+        # 우선순위: 1. 장애물 회피 (Lidar) > 2. 표지판 회전 (Sign) > 3. 차선 추종 (Camera)
         current_time = rospy.get_time()
         
         use_lidar_steering = False
         
-        # 장애물 감지 시(라이다 조향 명령 수신 시) 무조건 라이다 우선
+        # 라이다 조향 명령이 최근(0.5초 이내)에 수신되었다면 라이다 제어 우선
         if (current_time - self.last_lidar_steering_time) < 0.5:
             use_lidar_steering = True
         
@@ -226,18 +227,18 @@ class LaneFollower:
             self.last_servo_publish_time = current_time
             self._publish_servo_command(self.lidar_steering_cmd)
         elif self.sign_state == "TURNING":
-            # 표지판 회전 동작 수행 (강제 조향)
+            # 표지판 인식 후 회전 동작 수행 (강제 조향)
             self.last_servo_publish_time = current_time
             if self.sign_direction == "LEFT":
-                # 왼쪽: + 방향
+                # 왼쪽 회전: 서보 값 증가 (+)
                 target_servo = self.steering_offset + self.turn_servo_offset
             else:
-                # 오른쪽: - 방향
+                # 오른쪽 회전: 서보 값 감소 (-)
                 target_servo = self.steering_offset - self.turn_servo_offset
             self._publish_servo_command(target_servo)
         else:
-            # 그 외 색상(Red, Blue, White, None)이거나 라이다 명령이 없으면 카메라 차선 추종
-            # 단, 카메라 데이터가 최신일 때만 (0.5초 이내)
+            # 그 외의 경우 (평상시) 카메라 기반 차선 추종 수행
+            # 단, 카메라 데이터가 최신일 때만 (0.5초 이내) 유효
             if (current_time - self.last_image_time) < 0.5:
                 self.last_servo_publish_time = current_time
                 self._publish_servo_command(self.smoothed_servo)
@@ -249,7 +250,7 @@ class LaneFollower:
             rospy.logwarn(f"Failed to convert image: {exc}")
             return
 
-            self._setup_trackbars()
+        if not self.initialized:
             self._setup_trackbars()
             self.initialized = True
 
@@ -258,8 +259,8 @@ class LaneFollower:
         if has_stop_line:
             self.last_stop_line_time = rospy.get_time()
 
-        # 표지판 감지 및 시각화 (항상 수행하여 디버깅 창이 멈추지 않게 함)
-        # 내부에서 sign_state == "IDLE"일 때만 상태를 변경함
+        # 표지판 감지 및 시각화 (디버깅을 위해 항상 수행)
+        # 상태 변경은 내부에서 sign_state == "IDLE"일 때만 발생
         self._detect_traffic_sign(frame)
         
         if self.sign_state == "APPROACHING":
@@ -339,7 +340,7 @@ class LaneFollower:
                     self.error_bias, -self.max_error_bias, self.max_error_bias
                 )
             
-            # 학습된 편향을 모든 경우에 적용하여 보정
+            # 학습된 편향을 적용하여 오차 보정
             error = raw_error - self.error_bias
         else:
             raw_error = 0.0
@@ -376,7 +377,7 @@ class LaneFollower:
                 # 좌측 조향: 더 큰 변화 허용
                 delta_servo = self._clamp(delta_servo, 0, self.max_servo_delta_left)
             else:
-                # 우측 조향: 기존 제한 유지
+                # 우측 조향: 상대적으로 작은 변화 제한
                 delta_servo = self._clamp(delta_servo, -self.max_servo_delta_right, 0)
             limited_target = self.prev_servo + delta_servo
         else:
@@ -388,7 +389,7 @@ class LaneFollower:
             # 좌측 조향: 더 빠른 반응 (smoothing 값이 작을수록 빠름)
             smoothing_factor = self.steering_smoothing_left
         else:
-            # 우측 조향: 기존 smoothing 유지
+            # 우측 조향
             smoothing_factor = self.steering_smoothing_right
         
         smoothed_servo = (
@@ -541,7 +542,7 @@ class LaneFollower:
         return max(low, min(high, value))
 
     def _lidar_ackermann_callback(self, msg):
-        """라이다가 ackermann 명령을 발행하면 호출됨 (라이다 제어 중임을 표시)"""
+        """라이다 노드가 ackermann 명령을 발행하면 호출됨 (라이다 제어 활성화 상태 감지)"""
         self.last_lidar_servo_time = rospy.get_time()
         self.lidar_controlling = True
     
@@ -551,7 +552,7 @@ class LaneFollower:
         self.last_obstacle_time = rospy.get_time()
         
     def _lidar_steering_callback(self, msg):
-        """라이다에서 계산된 조향 명령 수신 (장애물 회피 시에만 들어옴)"""
+        """라이다 노드에서 계산된 회피 조향 명령 수신"""
         self.lidar_steering_cmd = msg.data
         self.last_lidar_steering_time = rospy.get_time()
 
@@ -574,8 +575,8 @@ class LaneFollower:
             
             # 거리 기반 속도 감소: 1m부터 점진적으로 감소하지만 절대 정지하지 않음 (회피 기동 위해)
             if closest < self.speed_reduction_start:
-                # 1m 이내 진입 시 0.3m/s ~ 0.15m/s(min_drive_speed)로 감속
-                # 거리가 0에 가까워져도 min_drive_speed는 유지
+                # 1m 이내 진입 시 min_drive_speed ~ 0.3m/s 사이로 감속
+                # 거리가 0에 가까워져도 최소 이동 속도(min_drive_speed)는 유지
                 ratio = self._clamp(closest / self.speed_reduction_start, 0.0, 1.0)
                 
                 min_avoid_speed = self.min_drive_speed  # 0.15 m/s
@@ -1001,80 +1002,121 @@ class LaneFollower:
 
         if self.enable_viz:
             cv2.imshow("Sign Blue Mask", blue_mask)
+    def _detect_crosswalk(self, frame):
         """
-        BEV 변환 후 흰색 영역 추출 -> 세로로 긴 직사각형(횡단보도 패턴) 검출
-        사용자 요청: 
-        1. 하얀 부분 추출
-        2. 진행 방향에 수평인 막대인지 확인(세로가 더 긺) -> Zebra Crossing의 세로 줄무늬 검출
+        Hough Line + Pattern Grouping (Horizontal Ladder Pattern)
+        1. BEV Warp
+        2. Canny -> HoughLinesP
+        3. Filter Horizontal Lines
+        4. Group by Y-spacing and X-overlap
+        5. Require >= 3 lines to confirm crosswalk (reject single stop line)
         """
-        # 1. BEV 변환
+        # 1. BEV Warp
         try:
             warped = self.warper.warp(frame)
         except Exception:
             return False
-        
-        # 2. 흰색 영역 추출 (HLS 기반)
-        # 노이즈를 줄이기 위해 블러링
-        blur = cv2.GaussianBlur(warped, (5, 5), 0)
-        hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
-        
-        # 흰색 정의: 명도(L)가 높고, 채도(S)는 크게 상관없으나 너무 높지 않은 것
-        # OpenCV HLS 범위: H(0-180), L(0-255), S(0-255)
-        lower_white = np.array([0, 80, 0])      # L > 80 (대폭 완화)
-        upper_white = np.array([180, 255, 255])
-        white_mask = cv2.inRange(hls, lower_white, upper_white)
-        
-        # 3. Morphology (노이즈 제거)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        
-        # 4. 윤곽선 검출
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        valid_rects = []
-        debug_img = warped.copy() if self.enable_viz else None
-        
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 50:  # 면적 기준 대폭 완화 (100 -> 50)
-                continue
-                
-            # Bounding Rect 구하기
-            x, y, w, h = cv2.boundingRect(cnt)
-            
-            # 조건: 세로가 더 길어야 함 (h > w)
-            # 횡단보도(Zebra Crossing)는 차 진행방향(세로)으로 긴 줄무늬가 가로로 나열됨
-            # 기준 대폭 완화: 약간만 세로로 길어도 인정 (0.8배)
-            if h < w * 0.8: 
-                continue
-                
-            # 채워진 비율(Solidity) 체크: 직사각형에 가까워야 함
-            rect_area = w * h
-            solidity = float(area) / rect_area
-            if solidity < 0.4: # Solidity 기준 완화 (0.5 -> 0.4)
-                continue
-            
-            valid_rects.append((x, y, w, h))
-            
+
+        # 2. Edge Detection
+        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        # Apply Gaussian Blur to reduce noise
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 50, 150)
+
+        # 3. Hough Lines
+        # Detect lines
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=30,
+            minLineLength=20,
+            maxLineGap=10
+        )
+
+        if lines is None:
             if self.enable_viz:
-                cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        
-        # 5. 패턴 인식: 세로로 긴 줄이 여러 개 (2개 이상)
-        is_crosswalk = False
-        if len(valid_rects) >= 5: # 개수 기준 완화 ()
-            # X 좌표 기준으로 정렬 (좌->우로 나열된 패턴인지 확인 가능)
-            valid_rects.sort(key=lambda r: r[0])
+                cv2.imshow("Crosswalk Debug", warped)
+                cv2.imshow("Crosswalk Edges", edges)
+            return False
+
+        # 4. Filter Horizontal Lines
+        horizontal_lines = []
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            dx = x2 - x1
+            dy = y2 - y1
+            angle = np.degrees(np.arctan2(dy, dx))
             
-            # 단순히 개수로 판단 (3개 이상이면 횡단보도)
-            is_crosswalk = True
-            if self.enable_viz:
-                cv2.putText(debug_img, "Crosswalk Detected!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            # Check if horizontal (within +/- 20 degrees of 0 or 180)
+            if abs(angle) < 20 or abs(angle) > 160:
+                # Normalize x1 < x2
+                if x1 > x2:
+                    x1, x2 = x2, x1
+                horizontal_lines.append({
+                    'y': (y1 + y2) / 2,
+                    'x_start': x1,
+                    'x_end': x2,
+                    'length': abs(dx)
+                })
+
+        # Sort by Y position
+        horizontal_lines.sort(key=lambda l: l['y'])
+
+        # 5. Grouping (Find chains of lines)
+        # We look for a sequence of lines with consistent spacing
+        groups = []
+        if len(horizontal_lines) >= 2:
+            current_group = [horizontal_lines[0]]
+            
+            # Parameters
+            min_gap = 5    # Minimum gap between lines (pixels) - allows top/bottom edges of same bar
+            max_gap = 100  # Maximum gap
+            
+            for i in range(1, len(horizontal_lines)):
+                line = horizontal_lines[i]
+                prev_line = current_group[-1]
                 
+                dy = line['y'] - prev_line['y']
+                
+                # Check Y gap
+                if min_gap <= dy <= max_gap:
+                    # Check X overlap
+                    overlap = min(line['x_end'], prev_line['x_end']) - max(line['x_start'], prev_line['x_start'])
+                    if overlap > 10: # At least 10px overlap
+                        current_group.append(line)
+                        continue
+                
+                # If not linked, check if current group is valid
+                if len(current_group) >= 3:
+                    groups.append(current_group)
+                
+                # Start new group
+                current_group = [line]
+                
+            # Check last group
+            if len(current_group) >= 3:
+                groups.append(current_group)
+            
+        is_crosswalk = len(groups) > 0
+        
         if self.enable_viz:
-            cv2.imshow("Crosswalk Debug", debug_img)
-            # cv2.imshow("Crosswalk Mask", mask)
+            debug_img = warped.copy()
+            # Draw all horizontal lines (Blue)
+            for l in horizontal_lines:
+                cv2.line(debug_img, (int(l['x_start']), int(l['y'])), (int(l['x_end']), int(l['y'])), (255, 0, 0), 1)
             
+            # Draw detected groups (Green)
+            for grp in groups:
+                for l in grp:
+                    cv2.line(debug_img, (int(l['x_start']), int(l['y'])), (int(l['x_end']), int(l['y'])), (0, 255, 0), 2)
+            
+            if is_crosswalk:
+                cv2.putText(debug_img, "Crosswalk!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                
+            cv2.imshow("Crosswalk Debug", debug_img)
+            cv2.imshow("Crosswalk Edges", edges)
+
         return is_crosswalk
 
     def _detect_stop_line(self, frame):
