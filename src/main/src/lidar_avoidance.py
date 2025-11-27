@@ -35,7 +35,7 @@ class LidarAvoidancePlanner:
         self.max_range = rospy.get_param("~max_range", 8.0)
         self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 50cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.10)  # 장애물 확장 마진 (0.45m)
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.05)  # 장애물 확장 마진 (0.05m)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 0.7m 이내를 장애물로 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
@@ -480,8 +480,8 @@ class LidarAvoidancePlanner:
         
         angle_increment = angles[1] - angles[0] if len(angles) > 1 else 0.01
         
-        # 차폭 반경(0.3m) + 여유(0.15m) = 0.45m 반경
-        bubble_radius = self.inflation_margin + 0.15
+        # 차폭 반경(0.1m) + 여유(0.05m) = 0.15m 반경 (50cm 차선 대응)
+        bubble_radius = self.inflation_margin + 0.10
         
         for i in obs_indices:
             dist = proc_ranges[i]
@@ -505,7 +505,7 @@ class LidarAvoidancePlanner:
         
         # Gap이 없으면 Threshold를 낮춰서 다시 시도 (Fallback)
         if not np.any(mask):
-            gap_threshold = 0.6
+            gap_threshold = 0.4
             mask = proc_ranges > gap_threshold
             
         # 연속된 True 구간(Gap) 찾기
