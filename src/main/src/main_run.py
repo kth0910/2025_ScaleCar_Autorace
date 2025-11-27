@@ -204,6 +204,9 @@ class LaneFollower:
         self.sign_stop_line_seen = False
         self.sign_stop_duration = 0.5
         self.sign_turn_duration = 0.5
+        
+        # 차단기 감지 변수
+        self.barrier_detected = False
         self.turn_servo_offset = 0.35  # 30도에 해당하는 서보 오프셋 (약 0.35)
 
         # 조이스틱 수동 제어 관련 변수
@@ -321,6 +324,9 @@ class LaneFollower:
         if not self.initialized:
             self._setup_trackbars()
             self.initialized = True
+
+        # -1. 차단기 감지 (최우선)
+        self.barrier_detected = self._detect_barrier(frame)
 
         # 0. 정지선 상시 감지 (상태와 무관하게 감지하여 메모리)
         has_stop_line = self._detect_stop_line(frame)
@@ -658,8 +664,13 @@ class LaneFollower:
         # 3. 통합: 기본적으로 가장 보수적인(느린) 속도 선택
         final_speed_mps = min(camera_speed_mps, lidar_safe_speed_mps)
         
+        # [Override] 차단기 감지 시 정지 (최우선)
+        if self.barrier_detected:
+            final_speed_mps = 0.0
+            rospy.logwarn_throttle(1.0, "Barrier detected. Stopping.")
+
         # [Override] Red/Blue 색상 검출 시 속도 고정 (라이다 안전 속도 무시)
-        if self.current_detected_color in ["red", "blue"]:
+        elif self.current_detected_color in ["red", "blue"]:
             rospy.loginfo_throttle(1.0, f"Color Override: {self.current_detected_color} detected. Forcing speed to {self.current_color_speed_mps:.2f} m/s")
             final_speed_mps = self.current_color_speed_mps
         
@@ -1072,6 +1083,58 @@ class LaneFollower:
 
         if self.enable_viz:
             cv2.imshow("Sign Blue Mask", blue_mask)
+    def _detect_barrier(self, frame):
+        """
+        차단기(Barrier) 감지
+        - ROI: 상단 1/2 (Vertical) & 가운데 1/3 (Horizontal)
+        - 조건: 노란색 비율이 70% 이상이면 차단기로 판단
+        """
+        if frame is None:
+            return False
+
+        h, w = frame.shape[:2]
+        
+        # ROI 설정: 상단 1/2, 가운데 1/3
+        # 상단 1/2: 0 ~ h/2
+        # 가운데 1/3: w/3 ~ 2w/3
+        roi_y_start = 0
+        roi_y_end = int(h / 2)
+        roi_x_start = int(w / 3)
+        roi_x_end = int(2 * w / 3)
+        
+        roi = frame[roi_y_start:roi_y_end, roi_x_start:roi_x_end]
+        if roi.size == 0:
+            return False
+
+        # HSV 변환 및 노란색 마스크
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        
+        # 기존 노란색 차선 파라미터 재사용
+        mask = cv2.inRange(hsv, self.yellow_hsv_low, self.yellow_hsv_high)
+        
+        # 비율 계산
+        total_pixels = roi.shape[0] * roi.shape[1]
+        if total_pixels == 0:
+            return False
+            
+        yellow_pixels = cv2.countNonZero(mask)
+        ratio = yellow_pixels / total_pixels
+        
+        is_barrier = ratio >= 0.70
+        
+        if self.enable_viz:
+            # 디버깅용 시각화 (ROI 영역 표시)
+            # 차단기 감지 시 빨간색 박스, 아니면 노란색 박스
+            color = (0, 0, 255) if is_barrier else (0, 255, 255)
+            cv2.rectangle(frame, (roi_x_start, roi_y_start), (roi_x_end, roi_y_end), color, 2)
+            cv2.putText(frame, f"Barrier: {ratio:.2f}", (roi_x_start, roi_y_end + 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+        if is_barrier:
+            rospy.logwarn_throttle(1.0, f"Barrier Detected! Yellow Ratio: {ratio:.2f}")
+            
+        return is_barrier
+
     def _detect_crosswalk(self, frame):
         """
         Detect Crosswalk: Vertical rectangles aligned horizontally (Zebra crossing)
