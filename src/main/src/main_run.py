@@ -167,7 +167,7 @@ class LaneFollower:
         rospy.Subscriber("lidar_avoidance/steering_cmd", Float64, self._lidar_steering_callback, queue_size=1)
         # 색상 기반 속도 제어 파라미터
         self.neutral_lane_speed = rospy.get_param(
-            "~neutral_lane_speed", 0.4
+            "~neutral_lane_speed", 0.3
         )
         self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
         self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.7)
