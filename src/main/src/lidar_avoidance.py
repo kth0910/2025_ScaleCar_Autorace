@@ -37,7 +37,7 @@ class LidarAvoidancePlanner:
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
         self.inflation_margin = rospy.get_param("~inflation_margin", 0.55)  # 장애물 확장 마진 (0.55m)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
-        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 0.7)  # 0.7m 이내를 장애물로 인식
+        self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 0.7m 이내를 장애물로 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV
         self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 4)  # 최소 연속 포인트 수 (노이즈 필터링)
@@ -64,7 +64,7 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 0.7)
         self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.2)
         self.pid_kd = rospy.get_param("~lidar_pid_kd", 3.5)
         self.prev_error = 0.0
