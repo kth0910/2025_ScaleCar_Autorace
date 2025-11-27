@@ -40,7 +40,7 @@ class LidarAvoidancePlanner:
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 0.7m 이내를 장애물로 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
         self.front_obstacle_angle = math.radians(rospy.get_param("~front_obstacle_angle_deg", 90.0))  # 장애물 감지 FOV
-        self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 4)  # 최소 연속 포인트 수 (노이즈 필터링)
+        self.min_obstacle_points = rospy.get_param("~min_obstacle_points", 6)  # 최소 연속 포인트 수 (노이즈 필터링 강화)
         self.obstacle_cluster_threshold = rospy.get_param("~obstacle_cluster_threshold", 0.15)  # 클러스터링 거리 임계값
         self.heading_weight = rospy.get_param("~heading_weight", 0.35)
         self.clearance_weight = rospy.get_param("~clearance_weight", 0.65)
@@ -327,8 +327,8 @@ class LidarAvoidancePlanner:
         # 3단계: 장애물 검출 - 전방 44도(±22도), 0.75m 이내 무조건 인식
         # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 44도로 변경
         
-        # 3-1. 전방 각도 필터링 (±90도) - 전방 180도
-        check_fov = math.radians(180.0) 
+        # 3-1. 전방 각도 필터링 (±65도) - 전방 130도
+        check_fov = math.radians(130.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
@@ -687,8 +687,8 @@ class LidarAvoidancePlanner:
             
             obstacle_detection_range = 0.60  # 0.60m
             
-            # 전방 180도(±90도) 필터링
-            front_angle_limit = math.radians(180.0) * 0.5
+            # 전방 130도(±65도) 필터링
+            front_angle_limit = math.radians(130.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
