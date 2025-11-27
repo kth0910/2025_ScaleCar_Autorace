@@ -58,7 +58,7 @@ class LaneFollower:
         # 노란 차선 검출 파라미터 (밝기 기반 필터링 없이 색상만 사용)
         self.use_yellow_lane_detection = rospy.get_param("~use_yellow_lane_detection", True)
         self.yellow_hsv_low = np.array(
-            rospy.get_param("~yellow_hsv_low", [15, 50, 50]),
+            rospy.get_param("~yellow_hsv_low", [10, 30, 30]),
             dtype=np.uint8,
         )
         self.yellow_hsv_high = np.array(
@@ -536,10 +536,16 @@ class LaneFollower:
         return self._apply_roi(lane_mask)
 
     def _yellow_lane_mask(self, frame):
-        """노란색 차선만 검출 (밝기 기반 필터링 없이 색상만 사용)"""
+        """노란색 차선만 검출 (어두운 환경 대응: CLAHE 적용)"""
         blur = cv2.GaussianBlur(frame, (5, 5), 0)
         hsv = cv2.cvtColor(blur, cv2.COLOR_BGR2HSV)
-        # HSV 색상 범위만 사용하여 노란색 검출 (밝기 필터링 없음)
+        
+        # 어두운 영역의 노란색을 살리기 위해 V(명도) 채널에 CLAHE 적용
+        h, s, v = cv2.split(hsv)
+        v = self.clahe.apply(v)
+        hsv = cv2.merge([h, s, v])
+        
+        # HSV 색상 범위만 사용하여 노란색 검출
         mask = cv2.inRange(hsv, self.yellow_hsv_low, self.yellow_hsv_high)
 
         # 노이즈 제거를 위한 모폴로지 연산
