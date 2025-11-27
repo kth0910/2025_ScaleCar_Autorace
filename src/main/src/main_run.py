@@ -1069,10 +1069,12 @@ class LaneFollower:
     def _detect_crosswalk(self, frame):
         """
         Detect Crosswalk: Vertical rectangles aligned horizontally (Zebra crossing)
-        Improved Logic:
-        1. Detect Vertical Lines.
-        2. Cluster segments by X-coordinate (merge broken lines).
-        3. Check for a sequence of these vertical edges with appropriate spacing.
+        Method: Contours on White Mask
+        Criteria:
+        1. White color mask
+        2. Contour is a vertical rectangle (h > w)
+        3. Width >= 20px
+        4. Grouping by alignment
         """
         # 1. BEV Warp
         try:
@@ -1080,137 +1082,85 @@ class LaneFollower:
         except Exception:
             return False
 
-        # 2. Edge Detection
-        gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 30, 120) # Lower thresholds
-
-        # 3. Hough Lines
-        lines = cv2.HoughLinesP(
-            edges,
-            rho=1,
-            theta=np.pi / 180,
-            threshold=20,          # Lower threshold
-            minLineLength=15,      # Shorter lines accepted
-            maxLineGap=20          # Larger gap to connect segments
-        )
-
-        if lines is None:
-            if self.enable_viz:
-                cv2.imshow("Crosswalk Debug", warped)
-                cv2.imshow("Crosswalk Edges", edges)
-            return False
-
-        # 4. Filter Vertical Lines
-        vertical_segments = []
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            dx = x2 - x1
-            dy = y2 - y1
-            angle = np.degrees(np.arctan2(dy, dx))
-            
-            # Vertical check: near +/- 90 degrees
-            if 60 < abs(angle) < 120: # Relaxed angle
-                vertical_segments.append(line[0])
-
-        if not vertical_segments:
-            return False
-
-        # 5. Cluster by X-coordinate
-        # Group segments that are vertically aligned (similar X)
-        vertical_segments.sort(key=lambda l: (l[0] + l[2]) / 2) # Sort by avg X
+        # 2. White Mask (HLS)
+        blur = cv2.GaussianBlur(warped, (5, 5), 0)
+        hls = cv2.cvtColor(blur, cv2.COLOR_BGR2HLS)
         
-        clusters = []
-        current_cluster = []
+        # White: High Lightness. Saturation can vary but usually low.
+        # Using a safe threshold for brightness.
+        lower_white = np.array([0, 140, 0]) 
+        upper_white = np.array([180, 255, 255])
+        mask = cv2.inRange(hls, lower_white, upper_white)
         
-        # X tolerance to consider segments as part of the same vertical edge
-        x_tolerance = 15 
+        # Morphology to fill gaps and remove noise
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        # 3. Find Contours
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        for seg in vertical_segments:
-            seg_x = (seg[0] + seg[2]) / 2
-            
-            if not current_cluster:
-                current_cluster.append(seg)
+        valid_rects = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 200: # Minimum area
                 continue
                 
-            last_seg = current_cluster[-1]
-            last_x = (last_seg[0] + last_seg[2]) / 2
+            x, y, w, h = cv2.boundingRect(cnt)
             
-            if abs(seg_x - last_x) <= x_tolerance:
-                current_cluster.append(seg)
-            else:
-                clusters.append(current_cluster)
-                current_cluster = [seg]
-        
-        if current_cluster:
-            clusters.append(current_cluster)
-            
-        # 6. Analyze Clusters (Valid Vertical Edges)
-        valid_edges = []
-        for cl in clusters:
-            # Calculate total vertical span
-            ys = [min(s[1], s[3]) for s in cl]
-            ye = [max(s[1], s[3]) for s in cl]
-            min_y = min(ys)
-            max_y = max(ye)
-            span = max_y - min_y
-            
-            # Avg X
-            xs = [(s[0] + s[2]) / 2 for s in cl]
-            avg_x = sum(xs) / len(xs)
-            
-            # X-coordinate filtering (Ignore left side noise)
-            if avg_x < 200:
+            # Filter by X (Ignore left side noise)
+            if x < 200:
                 continue
-            
-            # Must have significant vertical span
-            if span > 40: 
-                valid_edges.append({'x': avg_x, 'min_y': min_y, 'max_y': max_y})
+                
+            # User Request: Vertical Rectangle AND Width >= 20px
+            # Vertical: h > w
+            # Width: w >= 20
+            if w >= 20 and h > w:
+                # Additional check: Height should be significant
+                if h > 40:
+                    valid_rects.append({'x': x, 'y': y, 'w': w, 'h': h})
 
-        # 7. Check for Horizontal Pattern (Sequence of Edges)
-        # We need at least 4 edges (approx 2 stripes)
-        if len(valid_edges) < 4:
+        # 4. Grouping
+        # We need multiple stripes (e.g. >= 3) roughly aligned in Y
+        if len(valid_rects) < 3:
             if self.enable_viz:
                 debug_img = warped.copy()
-                for edge in valid_edges:
-                    cv2.line(debug_img, (int(edge['x']), int(edge['min_y'])), (int(edge['x']), int(edge['max_y'])), (0, 255, 255), 2)
+                cv2.imshow("Crosswalk Mask", mask)
                 cv2.imshow("Crosswalk Debug", debug_img)
             return False
             
-        # Check spacing between edges
-        # Stripes have width, spaces have width. Both create gaps between edges.
-        # We look for a consistent chain of edges.
+        # Check Y alignment
+        # Find the largest group of Y-aligned rects
+        max_aligned_count = 0
         
-        consecutive_count = 1
-        max_consecutive = 1
-        
-        for i in range(1, len(valid_edges)):
-            dx = valid_edges[i]['x'] - valid_edges[i-1]['x']
+        for i in range(len(valid_rects)):
+            current_aligned = [valid_rects[i]]
+            r1 = valid_rects[i]
+            r1_cy = r1['y'] + r1['h'] / 2
             
-            # Expected gap: 20px ~ 150px
-            if 20 <= dx <= 150:
-                consecutive_count += 1
-            else:
-                max_consecutive = max(max_consecutive, consecutive_count)
-                consecutive_count = 1
+            for j in range(len(valid_rects)):
+                if i == j: continue
+                r2 = valid_rects[j]
+                r2_cy = r2['y'] + r2['h'] / 2
                 
-        max_consecutive = max(max_consecutive, consecutive_count)
-        
-        is_crosswalk = max_consecutive >= 4
+                # Check Y difference of centers
+                if abs(r1_cy - r2_cy) < 50: # 50px tolerance
+                    current_aligned.append(r2)
+            
+            max_aligned_count = max(max_aligned_count, len(current_aligned))
+
+        is_crosswalk = max_aligned_count >= 3 # At least 3 stripes
         
         if self.enable_viz:
             debug_img = warped.copy()
-            for edge in valid_edges:
-                cv2.line(debug_img, (int(edge['x']), int(edge['min_y'])), (int(edge['x']), int(edge['max_y'])), (0, 255, 0), 2)
+            for r in valid_rects:
+                cv2.rectangle(debug_img, (r['x'], r['y']), (r['x']+r['w'], r['y']+r['h']), (0, 255, 0), 2)
             
-            if is_crosswalk:
-                cv2.putText(debug_img, f"CROSSWALK! (Count: {max_consecutive})", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-            else:
-                cv2.putText(debug_img, f"Edges: {max_consecutive}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                
+            cv2.putText(debug_img, f"Stripes: {max_aligned_count}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255) if is_crosswalk else (0, 255, 255), 2)
+            
+            cv2.imshow("Crosswalk Mask", mask)
             cv2.imshow("Crosswalk Debug", debug_img)
-            cv2.imshow("Crosswalk Edges", edges)
-
+            
         return is_crosswalk
 
     def _detect_stop_line(self, frame):
