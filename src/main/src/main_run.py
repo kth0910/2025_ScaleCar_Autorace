@@ -871,18 +871,26 @@ class LaneFollower:
     def _detect_traffic_sign(self, frame):
         """
         파란색 원형 표지판 감지 및 화살표 방향 판정 (Pixel Sum 방식)
-        - HSV 파란색 마스크로 표지판 영역 검출
-        - ROI 내부에서 흰색 마스크 추출
-        - 하단 좌/우 1/4 영역의 흰색 픽셀 수 비교로 방향 판정
+        - ROI: 화면 중단 20% (0.4h ~ 0.6h)만 사용
+        - HSV 파란색 마스크로 표지판 영역 검출 (임계값 완화)
         """
         if frame is None:
             return
 
-        # 1. HSV 변환 및 파란색 마스크
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        h, w = frame.shape[:2]
+        # ROI: 중단 20%
+        roi_top = int(h * 0.4)
+        roi_bottom = int(h * 0.6)
+        roi = frame[roi_top:roi_bottom, :]
         
-        # 파란색 범위 (표지판용)
-        lower_blue = np.array([90, 100, 70])
+        if roi.size == 0:
+            return
+
+        # 1. HSV 변환 및 파란색 마스크
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        
+        # 파란색 범위 대폭 완화
+        lower_blue = np.array([90, 50, 50])
         upper_blue = np.array([140, 255, 255])
         blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
         
@@ -899,38 +907,41 @@ class LaneFollower:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 500:  # 너무 작은 영역 무시
+            if area < 300:  # 면적 기준 완화
                 continue
                 
             perimeter = cv2.arcLength(cnt, True)
             if perimeter == 0:
                 continue
                 
-            # 원형도(Circularity) 계산: 4 * pi * Area / (Perimeter^2)
+            # 원형도(Circularity) 계산
             circularity = 4 * np.pi * area / (perimeter * perimeter)
             
-            # 원형 표지판이면 circularity가 1에 가까움 (0.7 이상 허용)
-            if circularity > 0.7:
+            # 원형 표지판이면 circularity가 1에 가까움 (0.6 이상 허용)
+            if circularity > 0.6:
                 if area > max_area:
                     max_area = area
                     detected_sign = cnt
         
         if detected_sign is not None:
-            x, y, w, h = cv2.boundingRect(detected_sign)
+            x, y, w, h_rect = cv2.boundingRect(detected_sign)
+            # ROI 좌표를 원본 좌표로 변환
+            y += roi_top
             
             # ROI 추출 (약간의 여백을 두고 자르기)
             margin = 2
+            # 원본 프레임에서 추출해야 하므로 y 좌표는 이미 보정됨
             x1 = max(0, x - margin)
             y1 = max(0, y - margin)
             x2 = min(frame.shape[1], x + w + margin)
-            y2 = min(frame.shape[0], y + h + margin)
+            y2 = min(frame.shape[0], y + h_rect + margin)
             
-            roi = frame[y1:y2, x1:x2]
-            if roi.size == 0:
+            roi_sign = frame[y1:y2, x1:x2]
+            if roi_sign.size == 0:
                 return
 
             # 3. 화살표(흰색) 추출
-            roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            roi_hsv = cv2.cvtColor(roi_sign, cv2.COLOR_BGR2HSV)
             # 흰색: 채도(S) 낮음, 명도(V) 높음
             lower_white = np.array([0, 0, 180])
             upper_white = np.array([180, 60, 255])
@@ -973,7 +984,7 @@ class LaneFollower:
             
             # 5. 결과 시각화
             color = (0, 255, 0) if direction != "Unknown" else (0, 255, 255)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.rectangle(frame, (x, y), (x + w, y + h_rect), color, 2)
             label = f"{direction}"
             cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
@@ -1006,7 +1017,7 @@ class LaneFollower:
         
         # 흰색 정의: 명도(L)가 높고, 채도(S)는 크게 상관없으나 너무 높지 않은 것
         # OpenCV HLS 범위: H(0-180), L(0-255), S(0-255)
-        lower_white = np.array([0, 130, 0])      # L > 130 (완화됨)
+        lower_white = np.array([0, 80, 0])      # L > 80 (대폭 완화)
         upper_white = np.array([180, 255, 255])
         white_mask = cv2.inRange(hls, lower_white, upper_white)
         
@@ -1023,7 +1034,7 @@ class LaneFollower:
         
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 100:  # 면적 기준 완화 (200 -> 100)
+            if area < 50:  # 면적 기준 대폭 완화 (100 -> 50)
                 continue
                 
             # Bounding Rect 구하기
@@ -1031,13 +1042,14 @@ class LaneFollower:
             
             # 조건: 세로가 더 길어야 함 (h > w)
             # 횡단보도(Zebra Crossing)는 차 진행방향(세로)으로 긴 줄무늬가 가로로 나열됨
-            if h < w * 1.1: # 비율 기준 완화 (1.5 -> 1.1)
+            # 기준 대폭 완화: 약간만 세로로 길어도 인정 (0.8배)
+            if h < w * 0.8: 
                 continue
                 
             # 채워진 비율(Solidity) 체크: 직사각형에 가까워야 함
             rect_area = w * h
             solidity = float(area) / rect_area
-            if solidity < 0.5: # Solidity 기준 완화 (0.7 -> 0.5)
+            if solidity < 0.4: # Solidity 기준 완화 (0.5 -> 0.4)
                 continue
             
             valid_rects.append((x, y, w, h))
