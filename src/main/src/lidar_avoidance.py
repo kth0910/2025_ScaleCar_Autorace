@@ -35,7 +35,7 @@ class LidarAvoidancePlanner:
         self.max_range = rospy.get_param("~max_range", 8.0)
         self.safe_distance = rospy.get_param("~safe_distance", 0.50)  # 50cm 안전 거리
         self.hard_stop_distance = rospy.get_param("~hard_stop_distance", 0.15)  # 15cm에서 완전 정지
-        self.inflation_margin = rospy.get_param("~inflation_margin", 0.55)  # 장애물 확장 마진 (0.55m)
+        self.inflation_margin = rospy.get_param("~inflation_margin", 0.45)  # 장애물 확장 마진 (0.45m)
         self.lookahead_distance = rospy.get_param("~lookahead_distance", 1.5)
         self.obstacle_threshold = rospy.get_param("~obstacle_threshold", 1.0)  # 0.7m 이내를 장애물로 인식
         self.max_drive_speed = rospy.get_param("~max_drive_speed", 0.15)  # m/s (장애물 회피 시 속도)
@@ -64,15 +64,15 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.0)
-        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.0)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)
+        self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.05)
         self.pid_kd = rospy.get_param("~lidar_pid_kd", 1.0)
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
         
         # 조향 관성 (Smoothing) 파라미터
-        self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.3)  # 0.0~1.0 (클수록 관성 큼)
+        self.steering_smoothing = rospy.get_param("~lidar_steering_smoothing", 0.6)  # 0.0~1.0 (클수록 관성 큼)
         self.prev_servo_cmd = self.servo_center
 
         # 카메라-라이다 퓨전 설정 (현재 미사용)
@@ -327,8 +327,8 @@ class LidarAvoidancePlanner:
         # 3단계: 장애물 검출 - 전방 44도(±22도), 0.75m 이내 무조건 인식
         # 회전 시 측면으로 빠지는 장애물도 놓치지 않도록 광각 감지 -> 요청에 따라 44도로 변경
         
-        # 3-1. 전방 각도 필터링 (±22도)
-        check_fov = math.radians(90.0) 
+        # 3-1. 전방 각도 필터링 (±60도) - 회피 중 장애물 놓침 방지
+        check_fov = math.radians(120.0) 
         half_fov = check_fov * 0.5
         
         # 각도 차이 계산 (0도 기준)
@@ -687,8 +687,8 @@ class LidarAvoidancePlanner:
             
             obstacle_detection_range = 0.75  # 0.75m
             
-            # 전방 44도(±22도) 필터링
-            front_angle_limit = math.radians(90.0) * 0.5
+            # 전방 120도(±60도) 필터링
+            front_angle_limit = math.radians(120.0) * 0.5
             angle_mask = np.abs(all_angles) <= front_angle_limit
             
             # 거리 및 각도 필터링
