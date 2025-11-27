@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from std_msgs.msg import Float64, Bool, String
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Joy
 from ackermann_msgs.msg import AckermannDriveStamped
 from cv_bridge import CvBridge
 
@@ -167,10 +167,10 @@ class LaneFollower:
         rospy.Subscriber("lidar_avoidance/steering_cmd", Float64, self._lidar_steering_callback, queue_size=1)
         # 색상 기반 속도 제어 파라미터
         self.neutral_lane_speed = rospy.get_param(
-            "~neutral_lane_speed", 0.4
+            "~neutral_lane_speed", 0.3
         )
-        self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.2)
-        self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.7)
+        self.red_lane_speed = rospy.get_param("~red_lane_speed", 0.15)
+        self.blue_lane_speed = rospy.get_param("~blue_lane_speed", 0.5)
         self.color_roi_height_ratio = rospy.get_param("~color_roi_height_ratio", 0.20)  # 이미지 하단 20% 영역 사용
         self.color_detection_ratio = rospy.get_param("~color_detection_ratio", 0.02)  # 색상 검출 임계값 (전체 픽셀의 2%)
         self.current_color_speed_mps = self._clamp(
@@ -204,11 +204,24 @@ class LaneFollower:
         self.sign_turn_duration = 0.5
         self.turn_servo_offset = 0.35  # 30도에 해당하는 서보 오프셋 (약 0.35)
 
+        # 조이스틱 수동 제어 관련 변수
+        self.manual_mode = False
+        self.joy_lb_idx = rospy.get_param("~joy_lb_idx", 4)  # LB 버튼 인덱스 (기본: 4)
+        self.joy_axis_throttle = rospy.get_param("~joy_axis_throttle", 1)  # 왼쪽 스틱 상하 (기본: 1)
+        self.joy_axis_steering = rospy.get_param("~joy_axis_steering", 3)  # 오른쪽 스틱 좌우 (기본: 3)
+        self.joy_max_speed_ratio = rospy.get_param("~joy_max_speed_ratio", 1.0) # 수동 모드 최대 속도 비율
+        
+        rospy.Subscriber("/joy", Joy, self.joy_callback, queue_size=1)
+
         rospy.on_shutdown(self._cleanup)
         rospy.loginfo("LaneFollower initialized.")
 
     def timer_callback(self, event):
         """주기적인 제어 명령 발행 (카메라 수신 여부와 무관하게 동작)"""
+        # 수동 모드일 경우 자율주행 로직 스킵
+        if self.manual_mode:
+            return
+
         # 1. 속도 제어 (통합)
         target_pwm = self._compute_integrated_speed()
         self._publish_speed_command(target_pwm)
@@ -242,6 +255,54 @@ class LaneFollower:
             if (current_time - self.last_image_time) < 0.5:
                 self.last_servo_publish_time = current_time
                 self._publish_servo_command(self.smoothed_servo)
+
+    def joy_callback(self, msg):
+        """조이스틱 입력 처리"""
+        # LB 버튼 상태 확인 (누르고 있으면 수동 모드)
+        if msg.buttons[self.joy_lb_idx] == 1:
+            if not self.manual_mode:
+                rospy.loginfo("Manual Mode Engaged (Joystick)")
+                self.manual_mode = True
+            
+            # 1. 조향 제어 (오른쪽 스틱 좌우)
+            # Axis 3: Left(+1.0) ~ Right(-1.0)
+            # Servo: Left(>0.5) ~ Right(<0.5) (steering_offset 기준)
+            # 매핑: steering_offset + (axis * scale)
+            steering_axis = msg.axes[self.joy_axis_steering]
+            # 스틱을 왼쪽으로 밀면(+), 서보값도 증가해야 함(좌회전)
+            # 스틱을 오른쪽으로 밀면(-), 서보값은 감소해야 함(우회전)
+            # 최대 0.35 정도의 변위 허용
+            target_servo = self.steering_offset + (steering_axis * 0.35)
+            target_servo = self._clamp(target_servo, self.min_servo, self.max_servo)
+            self._publish_servo_command(target_servo)
+            
+            # 2. 속도 제어 (왼쪽 스틱 상하)
+            # Axis 1: Up(+1.0) ~ Down(-1.0)
+            throttle_axis = msg.axes[self.joy_axis_throttle]
+            
+            if throttle_axis >= 0:
+                # 전진: min_moving_pwm ~ max_pwm
+                # throttle 0~1을 PWM 범위로 매핑
+                pwm_range = self.max_pwm - self.min_moving_pwm
+                target_pwm = self.min_moving_pwm + (throttle_axis * pwm_range * self.joy_max_speed_ratio)
+                if throttle_axis < 0.05: # 데드존
+                    target_pwm = 0.0
+            else:
+                # 후진 (현재 설정상 0으로 처리하거나 후진 로직이 있다면 적용)
+                # 여기서는 정지로 처리
+                target_pwm = 0.0
+                
+            target_pwm = self._clamp(target_pwm, self.min_pwm, self.max_pwm)
+            self._publish_speed_command(target_pwm)
+            
+            # 수동 제어 중에는 내부 상태 초기화 (적분 오차 등)
+            self.integral_error = 0.0
+            
+        else:
+            if self.manual_mode:
+                rospy.loginfo("Autonomous Mode Engaged (Joystick Released)")
+                self.manual_mode = False
+                # 복귀 시 안전을 위해 속도 0으로 초기화하지 않고 자연스럽게 제어권 넘김
 
     def image_callback(self, msg):
         try:
@@ -277,21 +338,11 @@ class LaneFollower:
         # 횡단보도 로직 상태 머신
         if self.crosswalk_state == "IDLE":
              if self._detect_crosswalk(frame):
-                 self.crosswalk_state = "APPROACHING"
-                 self.stop_line_seen = False
-                 rospy.loginfo("Crosswalk detected! Approaching stop line.")
+                 self.crosswalk_state = "STOPPING"
+                 self.crosswalk_stop_start_time = rospy.get_time()
+                 rospy.loginfo("Crosswalk detected! Stopping immediately.")
         
-        elif self.crosswalk_state == "APPROACHING":
-            # 정지선 감지 (has_stop_line) 또는 최근 감지 이력 확인
-            # 횡단보도 감지가 늦어서 이미 정지선을 지났을 경우를 대비해 1.0초 이내 이력 확인
-            if has_stop_line or (rospy.get_time() - self.last_stop_line_time < 1.0):
-                self.stop_line_seen = True
-            
-            # 정지선을 보았다가(혹은 최근에 봤다가) 현재 안보이면 정지
-            if self.stop_line_seen and not has_stop_line:
-                self.crosswalk_state = "STOPPING"
-                self.crosswalk_stop_start_time = rospy.get_time()
-                rospy.loginfo("Stop line passed (disappeared). Stopping.")
+        # APPROACHING 상태 제거됨 (즉시 정지)
         
         elif self.crosswalk_state == "DONE":
             if self.enable_viz:
@@ -1004,12 +1055,11 @@ class LaneFollower:
             cv2.imshow("Sign Blue Mask", blue_mask)
     def _detect_crosswalk(self, frame):
         """
-        Hough Line + Pattern Grouping (Horizontal Ladder Pattern)
+        Detect Crosswalk: Vertical rectangles aligned horizontally (Zebra crossing)
         1. BEV Warp
         2. Canny -> HoughLinesP
-        3. Filter Horizontal Lines
-        4. Group by Y-spacing and X-overlap
-        5. Require >= 4 lines AND sufficient vertical span to confirm crosswalk
+        3. Filter Vertical Lines
+        4. Group by X-spacing (Horizontal alignment)
         """
         # 1. BEV Warp
         try:
@@ -1040,81 +1090,73 @@ class LaneFollower:
                 cv2.imshow("Crosswalk Edges", edges)
             return False
 
-        # 4. Filter Horizontal Lines
-        horizontal_lines = []
+        # 4. Filter Vertical Lines
+        vertical_lines = []
         for line in lines:
             x1, y1, x2, y2 = line[0]
             dx = x2 - x1
             dy = y2 - y1
             angle = np.degrees(np.arctan2(dy, dx))
             
-            # Check if horizontal (within +/- 20 degrees of 0 or 180)
-            if abs(angle) < 20 or abs(angle) > 160:
-                # Normalize x1 < x2
-                if x1 > x2:
-                    x1, x2 = x2, x1
-                horizontal_lines.append({
-                    'y': (y1 + y2) / 2,
-                    'x_start': x1,
-                    'x_end': x2,
-                    'length': abs(dx)
+            # Check if vertical (within +/- 20 degrees of 90 or -90)
+            # abs(angle) is 0..180. Vertical is near 90.
+            if 70 < abs(angle) < 110:
+                # Normalize y1 < y2
+                if y1 > y2:
+                    y1, y2 = y2, y1
+                vertical_lines.append({
+                    'x': (x1 + x2) / 2,
+                    'y_start': y1,
+                    'y_end': y2,
+                    'length': abs(dy)
                 })
 
-        # Sort by Y position
-        horizontal_lines.sort(key=lambda l: l['y'])
+        # Sort by X position
+        vertical_lines.sort(key=lambda l: l['x'])
 
-        # 5. Grouping (Find chains of lines)
-        # We look for a sequence of lines with consistent spacing
+        # 5. Grouping (Find chains of lines with consistent X spacing)
         groups = []
-        if len(horizontal_lines) >= 2:
-            current_group = [horizontal_lines[0]]
+        if len(vertical_lines) >= 4: # Need at least 4 lines (2 stripes)
+            current_group = [vertical_lines[0]]
             
-            # Parameters
-            min_gap = 5    # Minimum gap between lines (pixels)
-            max_gap = 100  # Maximum gap
+            min_gap = 10   # Minimum gap between vertical edges
+            max_gap = 150  # Maximum gap (stripe width + space)
             
-            for i in range(1, len(horizontal_lines)):
-                line = horizontal_lines[i]
+            for i in range(1, len(vertical_lines)):
+                line = vertical_lines[i]
                 prev_line = current_group[-1]
                 
-                dy = line['y'] - prev_line['y']
+                dx = line['x'] - prev_line['x']
                 
-                # Check Y gap
-                if min_gap <= dy <= max_gap:
-                    # Check X overlap
-                    overlap = min(line['x_end'], prev_line['x_end']) - max(line['x_start'], prev_line['x_start'])
-                    if overlap > 10: # At least 10px overlap
+                # Check X gap
+                if min_gap <= dx <= max_gap:
+                    # Check Y alignment (overlap in Y)
+                    overlap = min(line['y_end'], prev_line['y_end']) - max(line['y_start'], prev_line['y_start'])
+                    if overlap > 20: # Significant vertical overlap
                         current_group.append(line)
                         continue
                 
                 # If not linked, check if current group is valid
-                # Condition: At least 4 lines AND vertical span > 50px
-                if len(current_group) >= 4:
-                    span = current_group[-1]['y'] - current_group[0]['y']
-                    if span > 50:
-                        groups.append(current_group)
+                if len(current_group) >= 6: # Increased threshold for robustness
+                     groups.append(current_group)
                 
-                # Start new group
                 current_group = [line]
                 
-            # Check last group
-            if len(current_group) >= 4:
-                span = current_group[-1]['y'] - current_group[0]['y']
-                if span > 50:
-                    groups.append(current_group)
+            if len(current_group) >= 6:
+                groups.append(current_group)
             
         is_crosswalk = len(groups) > 0
         
         if self.enable_viz:
             debug_img = warped.copy()
-            # Draw all horizontal lines (Blue)
-            for l in horizontal_lines:
-                cv2.line(debug_img, (int(l['x_start']), int(l['y'])), (int(l['x_end']), int(l['y'])), (255, 0, 0), 1)
+            # Draw all vertical lines (Blue)
+            for l in vertical_lines:
+                cv2.line(debug_img, (int(l['x']), int(l['y_start'])), (int(l['x']), int(l['y_end'])), (255, 0, 0), 1)
             
             # Draw detected groups (Green)
             for grp in groups:
                 for l in grp:
-                    cv2.line(debug_img, (int(l['x_start']), int(l['y'])), (int(l['x_end']), int(l['y'])), (0, 255, 0), 2)
+                    cv2.line(debug_img, (int(l['x']), int(l['y_start'])), (int(l['x']), int(l['y_end'])), (0, 255, 0), 2)
             
             if is_crosswalk:
                 cv2.putText(debug_img, "Crosswalk!", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
