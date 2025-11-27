@@ -64,9 +64,9 @@ class LidarAvoidancePlanner:
 
         # PID 제어 파라미터
         # target_angle(헤딩 에러)을 0으로 만들기 위한 제어
-        self.pid_kp = rospy.get_param("~lidar_pid_kp", 1.5)
+        self.pid_kp = rospy.get_param("~lidar_pid_kp", 2.0)
         self.pid_ki = rospy.get_param("~lidar_pid_ki", 0.05)
-        self.pid_kd = rospy.get_param("~lidar_pid_kd", 1.0)
+        self.pid_kd = rospy.get_param("~lidar_pid_kd", 1.5)
         self.prev_error = 0.0
         self.integral_error = 0.0
         self.prev_time = rospy.get_time()
@@ -143,7 +143,7 @@ class LidarAvoidancePlanner:
             return
 
         # 속도 제어용 FOV: 전방 90도 (±45도)
-        speed_fov_mask = np.abs(angles) <= math.radians(45.0)
+        speed_fov_mask = np.abs(angles) <= math.radians(60.0)
         if np.any(speed_fov_mask):
             closest = float(np.min(ranges[speed_fov_mask]))
         else:
@@ -152,7 +152,7 @@ class LidarAvoidancePlanner:
         self.clearance_pub.publish(closest)
         
         # 30cm 이하일 때는 정지 (15cm에서 완전 정지)
-        hard_stop_distance = 0.15  # 15cm
+        hard_stop_distance = 0.20  # 15cm
         speed_reduction_start = 0.30  # 30cm
         
         if closest <= hard_stop_distance:
