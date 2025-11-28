@@ -263,8 +263,13 @@ class LaneFollower:
 
     def joy_callback(self, msg):
         """조이스틱 입력 처리"""
+        # [Debug] 현재 눌린 버튼 확인을 위한 로그
+        for i, btn_val in enumerate(msg.buttons):
+            if btn_val == 1:
+                rospy.loginfo_throttle(0.5, f"DEBUG: Button {i} pressed")
+
         # LB 버튼 상태 확인 (누르고 있으면 수동 모드)
-        if msg.buttons[self.joy_lb_idx] == 1:
+        if len(msg.buttons) > self.joy_lb_idx and msg.buttons[self.joy_lb_idx] == 1:
             if not self.manual_mode:
                 rospy.loginfo("Manual Mode Engaged (Joystick)")
                 self.manual_mode = True
